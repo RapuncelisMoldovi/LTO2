@@ -274,7 +274,7 @@ class DatabaseManager:
             ("Паспорт парашюта",                 "9306002201"),
         ]
         for name, base10 in pdi_items:
-            add_item(name, base10, "шт", "serial", "ПДИ", [("UNI", base10)])
+            add_item(name, base10, "шт", "serial", "ПДИ", [("Без размера", base10)])
 
         # ── Высотное снаряжение ──────────────────────────────────────────────
         high_serial = [
@@ -304,9 +304,9 @@ class DatabaseManager:
             ("Лента стропа 25мм (бухта 50м)",         "5607000701", "м"),
         ]
         for name, base10 in high_serial:
-            add_item(name, base10, "шт", "serial", "Высотное снаряжение", [("UNI", base10)])
+            add_item(name, base10, "шт", "serial", "Высотное снаряжение", [("Без размера", base10)])
         for name, base10, uom in high_qty:
-            add_item(name, base10, uom, "qty", "Высотное снаряжение", [("UNI", base10)])
+            add_item(name, base10, uom, "qty", "Высотное снаряжение", [("Без размера", base10)])
 
         # ── Чехлы и палатки — qty ────────────────────────────────────────────
         tents_items = [
@@ -337,7 +337,7 @@ class DatabaseManager:
             ("Чехол для касок комплект 10шт",        "6301002501", "компл"),
         ]
         for name, base10, uom in tents_items:
-            add_item(name, base10, uom, "qty", "Чехлы и палатки", [("UNI", base10)])
+            add_item(name, base10, uom, "qty", "Чехлы и палатки", [("Без размера", base10)])
 
         self.conn.commit()
 

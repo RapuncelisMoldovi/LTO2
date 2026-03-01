@@ -105,17 +105,17 @@ def _backup_db(db_path: str) -> None:
 
 
 def _patch_calendar_arrows(date_edit) -> None:
-    """Убирает встроенные чёрные стрелки QCalendarWidget и ставит белые SVG-иконки."""
+    """Убирает встроенные чёрные стрелки QCalendarWidget и ставит белые PNG-иконки."""
     cal = date_edit.calendarWidget()
-    for name, svg in [
-        ("qt_calendar_prevmonth", "arrow-left-white.svg"),
-        ("qt_calendar_nextmonth", "arrow-right-white.svg"),
+    for name, icon_name in [
+        ("qt_calendar_prevmonth", "arrow-left-white"),
+        ("qt_calendar_nextmonth", "arrow-right-white"),
     ]:
         btn = cal.findChild(QToolButton, name)
         if btn:
             btn.setArrowType(Qt.ArrowType.NoArrow)
-            # Загружаем SVG, принудительно окрашиваем в белый через CompositionMode
-            raw = _icon_from_file(svg, 14).pixmap(QSize(14, 18))
+            # Загружаем иконку, принудительно окрашиваем в белый через CompositionMode
+            raw = _icon_from_file(icon_name, 14).pixmap(QSize(14, 18))
             white = QPixmap(raw.size())
             white.fill(QColor(0, 0, 0, 0))
             p = QPainter(white)
@@ -127,16 +127,34 @@ def _patch_calendar_arrows(date_edit) -> None:
             btn.setIconSize(QSize(14, 18))
 
 
-def _icon_from_file(filename: str, size: int = 20) -> QIcon:
-    """Загружает иконку из папки icons/ рядом с main.py. Возвращает пустой QIcon если файл не найден."""
+def _icon_path(base_name: str) -> str | None:
+    """Возвращает путь к иконке в icons/ (только .png). base_name — без расширения."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(base_dir, "icons", filename)
-    if not os.path.exists(path):
+    path = os.path.join(base_dir, "icons", base_name + ".png")
+    return path if os.path.exists(path) else None
+
+
+def _icon_from_file(base_name: str, size: int = 20) -> QIcon:
+    """Загружает иконку PNG из папки icons/. base_name — без расширения."""
+    path = _icon_path(base_name)
+    if not path:
         return QIcon()
     pix = QPixmap(path)
     if not pix.isNull() and (pix.width() != size or pix.height() != size):
         pix = pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     return QIcon(pix)
+
+
+def _size_display(size_name: str | None) -> str:
+    """Для отображения: UNI и пусто → «Без размера»."""
+    if not size_name or (size_name or "").strip().upper() == "UNI":
+        return "Без размера"
+    return size_name
+
+
+def _is_no_size(size_name: str | None) -> bool:
+    """Вариант без размера (UNI или «Без размера»)."""
+    return (size_name or "").strip().upper() in ("UNI", "БЕЗ РАЗМЕРА")
 
 
 class NewItemDialog(QDialog):
@@ -232,7 +250,7 @@ class NewVariantDialog(QDialog):
         form = QFormLayout()
 
         self.size_edit = QLineEdit()
-        self.size_edit.setPlaceholderText("например: 44-170 или UNI")
+        self.size_edit.setPlaceholderText("например: 44-170 или Без размера")
 
         self.full_code_edit = QLineEdit()
         self.full_code_edit.setMaxLength(10)
@@ -340,7 +358,7 @@ class NomenclatureTab(QWidget):
             return
         self._variants = self.db.get_variants_for_item(item_id)
         for v in self._variants:
-            text = f"{v['size_name']}  [{v['full_code']}]"
+            text = f"{_size_display(v['size_name'])}  [{v['full_code']}]"
             self.variants_list.addItem(text)
 
     def on_item_selected(self, index: int):
@@ -456,7 +474,7 @@ class NomenclatureTab(QWidget):
             return
         v = self._variants[idx]
         variant_id = v["id"]
-        label = f"{v['size_name']} [{v['full_code']}]"
+        label = f"{_size_display(v['size_name'])} [{v['full_code']}]"
 
         has_history = self.db.has_journal_entries_for_variant(variant_id)
         if has_history:
@@ -542,9 +560,10 @@ class OperationDetailDialog(QDialog):
         table.setHorizontalHeaderLabels(["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N"])
         hh = table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        table.setColumnWidth(1, 120)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.verticalHeader().setVisible(False)
@@ -554,7 +573,7 @@ class OperationDetailDialog(QDialog):
             table.insertRow(row_idx)
             qty_sn = r["factory_sn"] if r["factory_sn"] else str(r["quantity"] or "")
             table.setItem(row_idx, 0, QTableWidgetItem(r["item_name"]))
-            table.setItem(row_idx, 1, QTableWidgetItem(r["size_name"] or ""))
+            table.setItem(row_idx, 1, QTableWidgetItem(_size_display(r.get("size_name"))))
             table.setItem(row_idx, 2, QTableWidgetItem(r["full_code"] or ""))
             table.setItem(row_idx, 3, QTableWidgetItem(qty_sn))
 
@@ -576,7 +595,11 @@ class JournalTab(QWidget):
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
         self.db = db
-        self._ops: list[dict] = []   # сгруппированные операции для открытия диалога
+        self._ops: list[dict] = []
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._apply_journal_filter)
         self._build_ui()
         self.load_units()
         self.load_journal()
@@ -616,19 +639,28 @@ class JournalTab(QWidget):
         filter_layout.addStretch()
         self.export_journal_excel_btn = QPushButton()
         self.export_journal_excel_btn.setObjectName("ExportBtn")
-        self.export_journal_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone.svg", 18))
+        self.export_journal_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
         self.export_journal_excel_btn.setIconSize(QSize(18, 18))
         self.export_journal_excel_btn.setFixedSize(32, 32)
         self.export_journal_excel_btn.setToolTip("Экспорт в Excel")
         self.export_journal_pdf_btn = QPushButton()
         self.export_journal_pdf_btn.setObjectName("ExportBtn")
-        self.export_journal_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone.svg", 18))
+        self.export_journal_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone", 18))
         self.export_journal_pdf_btn.setIconSize(QSize(18, 18))
         self.export_journal_pdf_btn.setFixedSize(32, 32)
         self.export_journal_pdf_btn.setToolTip("Экспорт в PDF")
         filter_layout.addWidget(self.export_journal_excel_btn)
         filter_layout.addWidget(self.export_journal_pdf_btn)
         main_layout.addLayout(filter_layout)
+
+        # Строка поиска
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Поиск:"))
+        self.journal_search_edit = QLineEdit()
+        self.journal_search_edit.setPlaceholderText("Документ, дата или наименование имущества...")
+        self.journal_search_edit.textChanged.connect(lambda _: self._search_timer.start())
+        search_layout.addWidget(self.journal_search_edit)
+        main_layout.addLayout(search_layout)
 
         # Плоская таблица — одна строка на операцию
         self.journal_table = QTableWidget(0, 5)
@@ -696,6 +728,21 @@ class JournalTab(QWidget):
             self.journal_table.setItem(i, 2, QTableWidgetItem(op["doc_name"]))
             self.journal_table.setItem(i, 3, QTableWidgetItem(str(len(op["rows"]))))
             self.journal_table.setItem(i, 4, QTableWidgetItem(op["unit_name"]))
+
+        self._apply_journal_filter()
+
+    def _apply_journal_filter(self):
+        text = self.journal_search_edit.text().strip().lower()
+        for i, op in enumerate(self._ops):
+            if not text:
+                self.journal_table.setRowHidden(i, False)
+                continue
+            match = (
+                text in op["doc_name"].lower()
+                or text in op["date"].lower()
+                or any(text in (row["item_name"] or "").lower() for row in op["rows"])
+            )
+            self.journal_table.setRowHidden(i, not match)
 
     def on_export_journal_excel(self):
         path, _ = QFileDialog.getSaveFileName(self, "Экспорт журнала", "", "Excel (*.xlsx)")
@@ -923,10 +970,11 @@ class BasketDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N", ""])
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(1, 120)
         self.table.setColumnWidth(4, 40)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -1036,7 +1084,7 @@ class BasketDialog(QDialog):
             self.table.insertRow(i)
             self.table.setRowHeight(i, 40)
             self.table.setItem(i, 0, QTableWidgetItem(pos["item_name"]))
-            self.table.setItem(i, 1, QTableWidgetItem(pos["size_name"] or "UNI"))
+            self.table.setItem(i, 1, QTableWidgetItem(_size_display(pos.get("size_name"))))
             self.table.setItem(i, 2, QTableWidgetItem(pos["full_code"] or ""))
             val = pos["sn"] if pos["item_type"] == "serial" else str(pos["qty"])
             qty_item = QTableWidgetItem(val)
@@ -1100,7 +1148,7 @@ class BasketDialog(QDialog):
                     current = self.db.get_qty_stock(vid)
                     if current < pos["qty"]:
                         errors.append(
-                            f"«{pos['item_name']} / {pos['size_name']}»: "
+                            f"«{pos['item_name']} / {_size_display(pos.get('size_name'))}»: "
                             f"запрошено {pos['qty']}, на складе {current}"
                         )
             else:
@@ -1202,9 +1250,10 @@ class OperationsTab(QWidget):
         hh = self.results_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.results_table.setColumnWidth(2, 120)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         root.addWidget(self.results_table, 1)
@@ -1361,7 +1410,7 @@ class OperationsTab(QWidget):
             self.results_table.insertRow(i)
             self.results_table.setItem(i, 0, QTableWidgetItem(row["full_code"] or ""))
             self.results_table.setItem(i, 1, QTableWidgetItem(row["item_name"] or ""))
-            self.results_table.setItem(i, 2, QTableWidgetItem(row["size_name"] or ""))
+            self.results_table.setItem(i, 2, QTableWidgetItem(_size_display(row.get("size_name"))))
             self.results_table.setItem(i, 3, QTableWidgetItem(row["category_name"] or "—"))
 
             stock_val = row["stock_value"] or 0
@@ -1410,7 +1459,7 @@ class OperationsTab(QWidget):
         self.selected_variant = vrow
         type_text = "Мат. средства" if vrow["item_type"] == "qty" else "Основные средства"
         self.selected_label.setText(
-            f"{vrow['item_name']}  |  {vrow['size_name']}  |  {vrow['full_code']}  ({type_text})"
+            f"{vrow['item_name']}  |  {_size_display(vrow.get('size_name'))}  |  {vrow['full_code']}  ({type_text})"
         )
         self._set_input_mode(vrow["item_type"])
         if vrow["item_type"] == "qty":
@@ -1519,13 +1568,13 @@ class StockTab(QWidget):
         search_layout.addStretch()
         self.export_stock_excel_btn = QPushButton()
         self.export_stock_excel_btn.setObjectName("ExportBtn")
-        self.export_stock_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone.svg", 18))
+        self.export_stock_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
         self.export_stock_excel_btn.setIconSize(QSize(18, 18))
         self.export_stock_excel_btn.setFixedSize(32, 32)
         self.export_stock_excel_btn.setToolTip("Экспорт в Excel")
         self.export_stock_pdf_btn = QPushButton()
         self.export_stock_pdf_btn.setObjectName("ExportBtn")
-        self.export_stock_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone.svg", 18))
+        self.export_stock_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone", 18))
         self.export_stock_pdf_btn.setIconSize(QSize(18, 18))
         self.export_stock_pdf_btn.setFixedSize(32, 32)
         self.export_stock_pdf_btn.setToolTip("Экспорт в PDF")
@@ -1546,7 +1595,7 @@ class StockTab(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setStretchLastSection(False)
         self.tree.setColumnWidth(0, 150)
-        self.tree.setColumnWidth(2, 100)
+        self.tree.setColumnWidth(2, 120)
         self.tree.setColumnWidth(3, 80)
         self.tree.setColumnWidth(4, 70)
         self.tree.setRootIsDecorated(False)
@@ -1604,8 +1653,8 @@ class StockTab(QWidget):
         details = self.db.get_item_stock_details(row["item_id"])
         is_serial = row["item_type"] == "serial"
 
-        # Есть ли реальный размерный ряд (не только UNI)
-        has_sizes = len(details) > 1 or (len(details) == 1 and details[0]["size_name"].upper() != "UNI")
+        # Есть ли реальный размерный ряд (не только «Без размера»)
+        has_sizes = len(details) > 1 or (len(details) == 1 and (details[0]["size_name"] or "").upper() not in ("UNI", "БЕЗ РАЗМЕРА"))
 
         top = QTreeWidgetItem(parent) if parent is not None else QTreeWidgetItem(self.tree)
         top.setText(0, row["base_code"])
@@ -1626,7 +1675,7 @@ class StockTab(QWidget):
                 sn_node.setText(0, sn_row["full_code"])
                 sn_node.setText(1, f"S/N: {sn_row['factory_sn']}")
                 size = sn_row["size_name"]
-                sn_node.setText(2, "" if size.upper() == "UNI" else size)
+                sn_node.setText(2, _size_display(size))
                 sn_node.setText(3, "1")
                 sn_node.setText(4, row["uom"])
                 sn_node.setFlags(sn_node.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1649,7 +1698,7 @@ class StockTab(QWidget):
                 child = QTreeWidgetItem(top)
                 child.setText(0, d["full_code"])
                 child.setText(1, "")
-                child.setText(2, d["size_name"])
+                child.setText(2, _size_display(d["size_name"]))
                 child.setText(3, str(d["stock_value"]))
                 child.setText(4, d["uom"])
                 child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1661,7 +1710,7 @@ class StockTab(QWidget):
             top.setExpanded(False)
 
         else:
-            # Мат. средства без размерного ряда (UNI)
+            # Мат. средства без размерного ряда (Без размера)
             top.setText(0, details[0]["full_code"] if details else row["base_code"])
             top.setChildIndicatorPolicy(
                 QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
@@ -1864,8 +1913,8 @@ class _NavBtn(QPushButton):
         super().__init__(text, parent)
         self.setObjectName(obj_name)
         self.setCheckable(True)
-        self.setIconSize(QSize(24, 24))
-        self.setFixedHeight(40)
+        self.setIconSize(QSize(24, 20))
+        self.setFixedHeight(48)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
@@ -1879,7 +1928,10 @@ class MainWindow(QMainWindow):
             data={},
         )
         # endregion
-        self.setWindowTitle("Складской учет (PyQt6 + SQLite)")
+        self.setWindowTitle("ЛТО — Складской учёт")
+        _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+        if os.path.exists(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
         self.resize(1200, 720)
         self.setMinimumSize(900, 580)
 
@@ -1890,18 +1942,19 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
-    def _load_icon(self, filename: str) -> QIcon:
-        """Загружает иконку из папки icons/. Возвращает пустой QIcon если файл не найден."""
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        icon_path = os.path.join(base_dir, "icons", filename)
-        if os.path.exists(icon_path):
-            return QIcon(icon_path)
+    def _load_icon(self, base_name: str) -> QIcon:
+        """Загружает иконку PNG из папки icons/. base_name — без расширения."""
+        path = _icon_path(base_name)
+        if path:
+            return QIcon(path)
         return QIcon()
 
     def _nav_icon(self, filename: str) -> QIcon:
         """Загружает иконку и возвращает двухрежимный QIcon:
         - Normal  → цвет подписи неактивного пункта (#DEEBFF)
         - Active/Selected → цвет активного пункта (#FFFFFF)
+        Зазор между иконкой и текстом задаётся шириной контейнера (padding в QSS
+        не подходит: у QPushButton нет subcontrol для иконки, padding сдвигает весь блок).
         """
         base_icon = self._load_icon(filename)
         if base_icon.isNull():
@@ -1917,7 +1970,15 @@ class MainWindow(QMainWindow):
             painter.end()
             return result
 
-        src = base_icon.pixmap(QSize(24, 24))
+        raw = base_icon.pixmap(QSize(20, 20))
+        # Справа +4px зазор между иконкой и текстом (контейнер 24×20)
+        container = QPixmap(24, 20)
+        container.fill(QColor(0, 0, 0, 0))
+        p = QPainter(container)
+        p.drawPixmap(0, 0, raw)
+        p.end()
+        src = container
+
         icon = QIcon()
         icon.addPixmap(colorize(src, "#DEEBFF"), QIcon.Mode.Normal,   QIcon.State.Off)
         icon.addPixmap(colorize(src, "#FFFFFF"), QIcon.Mode.Active,   QIcon.State.Off)
@@ -1989,8 +2050,8 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(lbl_main)
 
         self.btn_stock = _NavBtn("Остатки на складе", "NavButton")
-        self.btn_stock.setIcon(self._nav_icon("ph-warehouse-light.svg"))
-        self.btn_stock.setFixedHeight(40)
+        self.btn_stock.setIcon(self._nav_icon("ph-warehouse-light"))
+        self.btn_stock.setFixedHeight(44)
         nav_layout.addWidget(self.btn_stock)
 
         nav_layout.addSpacing(8)
@@ -2002,17 +2063,17 @@ class MainWindow(QMainWindow):
 
         self._operations_expanded = True
         self.btn_operations_parent = _NavBtn("Операции  ▼", "NavParent")
-        self.btn_operations_parent.setIcon(self._nav_icon("ph-arrows-left-right-light.svg"))
-        self.btn_operations_parent.setFixedHeight(40)
+        self.btn_operations_parent.setIcon(self._nav_icon("ph-arrows-left-right-light"))
+        self.btn_operations_parent.setFixedHeight(44)
         self.btn_operations_parent.setCheckable(False)   # только разворачивает меню
         nav_layout.addWidget(self.btn_operations_parent)
 
         self.btn_journal = _NavBtn("Журнал операций", "NavChild", left_padding=36)
-        self.btn_journal.setFixedHeight(34)
+        self.btn_journal.setFixedHeight(38)
         nav_layout.addWidget(self.btn_journal)
 
         self.btn_conduct = _NavBtn("Проведение", "NavChild", left_padding=36)
-        self.btn_conduct.setFixedHeight(34)
+        self.btn_conduct.setFixedHeight(38)
         nav_layout.addWidget(self.btn_conduct)
 
         nav_layout.addSpacing(8)
@@ -2023,13 +2084,13 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(lbl_ref)
 
         self.btn_nomenclature = _NavBtn("Номенклатор", "NavButton")
-        self.btn_nomenclature.setIcon(self._nav_icon("ph-squares-four-light.svg"))
-        self.btn_nomenclature.setFixedHeight(40)
+        self.btn_nomenclature.setIcon(self._nav_icon("ph-squares-four-light"))
+        self.btn_nomenclature.setFixedHeight(44)
         nav_layout.addWidget(self.btn_nomenclature)
 
         self.btn_units = _NavBtn("Подразделения", "NavButton")
-        self.btn_units.setIcon(self._nav_icon("ph-buildings-light.svg"))
-        self.btn_units.setFixedHeight(40)
+        self.btn_units.setIcon(self._nav_icon("ph-buildings-light"))
+        self.btn_units.setFixedHeight(44)
         nav_layout.addWidget(self.btn_units)
 
         nav_layout.addStretch()
@@ -2040,7 +2101,7 @@ class MainWindow(QMainWindow):
         sidebar_footer.setObjectName("SidebarFooterFrame")
         footer_layout = QHBoxLayout(sidebar_footer)
         footer_layout.setContentsMargins(16, 10, 16, 10)
-        footer_label = QLabel("PyQt6 · SQLite")
+        footer_label = QLabel("ISTOMIN · 54169")
         footer_label.setObjectName("SidebarFooter")
         footer_layout.addWidget(footer_label)
         sidebar_layout.addWidget(sidebar_footer)
