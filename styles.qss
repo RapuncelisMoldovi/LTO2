@@ -17,7 +17,7 @@ QFrame#AppHeader {
 }
 
 QLabel#LogoBadge {
-    background-color: #FFFFFF;
+    background-color: transparent;
     color: #0052CC;
     font-weight: 700;
     font-size: 13px;

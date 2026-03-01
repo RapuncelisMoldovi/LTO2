@@ -144,9 +144,11 @@ class DatabaseManager:
             """
         )
 
-        # Заполним пару подразделений по умолчанию
-        cur.execute("INSERT OR IGNORE INTO units(name) VALUES (?)", ("Склад-основной",))
-        cur.execute("INSERT OR IGNORE INTO units(name) VALUES (?)", ("Цех-1",))
+        # Подразделения по умолчанию — только если таблица пуста (первый запуск)
+        cur.execute("SELECT COUNT(*) FROM units")
+        if cur.fetchone()[0] == 0:
+            cur.execute("INSERT INTO units(name) VALUES (?)", ("Склад-основной",))
+            cur.execute("INSERT INTO units(name) VALUES (?)", ("Цех-1",))
 
         self.conn.commit()
 

@@ -134,6 +134,17 @@ def _icon_path(base_name: str) -> str | None:
     return path if os.path.exists(path) else None
 
 
+def _logo_path() -> str | None:
+    """Путь к логотипу приложения (PNG) для шапки сайдбара и иконки окна.
+    Ищет logo.png в корне проекта и в icons/. Можно использовать один файл для обоих."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in ("logo.png", "icons/logo.png"):
+        path = os.path.join(base_dir, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _icon_from_file(base_name: str, size: int = 20) -> QIcon:
     """Загружает иконку PNG из папки icons/. base_name — без расширения."""
     path = _icon_path(base_name)
@@ -573,7 +584,7 @@ class OperationDetailDialog(QDialog):
             table.insertRow(row_idx)
             qty_sn = r["factory_sn"] if r["factory_sn"] else str(r["quantity"] or "")
             table.setItem(row_idx, 0, QTableWidgetItem(r["item_name"]))
-            table.setItem(row_idx, 1, QTableWidgetItem(_size_display(r.get("size_name"))))
+            table.setItem(row_idx, 1, QTableWidgetItem(_size_display(r["size_name"])))
             table.setItem(row_idx, 2, QTableWidgetItem(r["full_code"] or ""))
             table.setItem(row_idx, 3, QTableWidgetItem(qty_sn))
 
@@ -1256,6 +1267,17 @@ class OperationsTab(QWidget):
         self.results_table.setColumnWidth(2, 120)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.results_table.setSortingEnabled(True)
+        self._results_sort_column = 0
+        self._results_sort_order = Qt.SortOrder.AscendingOrder
+        def _on_results_header_clicked(section):
+            if section == 2:
+                hh.setSortIndicator(self._results_sort_column, self._results_sort_order)
+                self.results_table.sortByColumn(self._results_sort_column, self._results_sort_order)
+            else:
+                self._results_sort_column = hh.sortIndicatorSection()
+                self._results_sort_order = hh.sortIndicatorOrder()
+        hh.sectionClicked.connect(_on_results_header_clicked)
         root.addWidget(self.results_table, 1)
 
         # ── Панель добавления выбранного товара ──
@@ -1403,6 +1425,7 @@ class OperationsTab(QWidget):
         """Основная логика поиска. Вызывается явно или при автофильтрации."""
         is_out = self.out_radio.isChecked()
         rows = self.db.search_variants(text, only_in_stock=is_out)
+        self.results_table.setSortingEnabled(False)
         self.results_table.setRowCount(0)
         self._search_rows = rows
 
@@ -1410,7 +1433,7 @@ class OperationsTab(QWidget):
             self.results_table.insertRow(i)
             self.results_table.setItem(i, 0, QTableWidgetItem(row["full_code"] or ""))
             self.results_table.setItem(i, 1, QTableWidgetItem(row["item_name"] or ""))
-            self.results_table.setItem(i, 2, QTableWidgetItem(_size_display(row.get("size_name"))))
+            self.results_table.setItem(i, 2, QTableWidgetItem(_size_display(row["size_name"])))
             self.results_table.setItem(i, 3, QTableWidgetItem(row["category_name"] or "—"))
 
             stock_val = row["stock_value"] or 0
@@ -1421,6 +1444,8 @@ class OperationsTab(QWidget):
             else:
                 stock_item.setForeground(QColor("#97A0AF"))
             self.results_table.setItem(i, 4, stock_item)
+
+        self.results_table.setSortingEnabled(True)
 
         self.selected_variant = None
         self.selected_label.setText("Выберите товар из результатов поиска")
@@ -1459,7 +1484,7 @@ class OperationsTab(QWidget):
         self.selected_variant = vrow
         type_text = "Мат. средства" if vrow["item_type"] == "qty" else "Основные средства"
         self.selected_label.setText(
-            f"{vrow['item_name']}  |  {_size_display(vrow.get('size_name'))}  |  {vrow['full_code']}  ({type_text})"
+            f"{vrow['item_name']}  |  {_size_display(vrow['size_name'])}  |  {vrow['full_code']}  ({type_text})"
         )
         self._set_input_mode(vrow["item_type"])
         if vrow["item_type"] == "qty":
@@ -1605,6 +1630,18 @@ class StockTab(QWidget):
         self.tree.setAlternatingRowColors(False)
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.itemClicked.connect(self.on_item_clicked)
+
+        self.tree.setSortingEnabled(True)
+        self._stock_sort_column = 0
+        self._stock_sort_order = Qt.SortOrder.AscendingOrder
+        def _on_stock_header_clicked(section):
+            if section == 2 or section == 3:
+                header.setSortIndicator(self._stock_sort_column, self._stock_sort_order)
+                self.tree.sortByColumn(self._stock_sort_column, self._stock_sort_order)
+            else:
+                self._stock_sort_column = header.sortIndicatorSection()
+                self._stock_sort_order = header.sortIndicatorOrder()
+        header.sectionClicked.connect(_on_stock_header_clicked)
 
         self.search_edit.textChanged.connect(lambda _: self._search_timer.start())
         self.export_stock_excel_btn.clicked.connect(self.on_export_stock_excel)
@@ -1929,9 +1966,13 @@ class MainWindow(QMainWindow):
         )
         # endregion
         self.setWindowTitle("ЛТО — Складской учёт")
-        _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
-        if os.path.exists(_icon_path):
-            self.setWindowIcon(QIcon(_icon_path))
+        logo_path = _logo_path()
+        if logo_path:
+            self.setWindowIcon(QIcon(logo_path))
+        else:
+            icon_ico = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+            if os.path.exists(icon_ico):
+                self.setWindowIcon(QIcon(icon_ico))
         self.resize(1200, 720)
         self.setMinimumSize(900, 580)
 
@@ -2019,8 +2060,12 @@ class MainWindow(QMainWindow):
 
         logo_badge = QLabel("WH")
         logo_badge.setObjectName("LogoBadge")
-        logo_badge.setFixedSize(32, 32)
+        logo_badge.setFixedSize(36, 36)
         logo_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_path = _logo_path()
+        if logo_path:
+            logo_badge.setText("")
+            logo_badge.setPixmap(QIcon(logo_path).pixmap(QSize(36, 36)))
 
         app_name = QLabel("Склад · ЛТО")
         app_name.setObjectName("AppName")
