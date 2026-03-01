@@ -160,6 +160,42 @@ QDateEdit:hover {
     border-color: #B3BAC5;
 }
 
+/* Спинбокс: область стрелок справа — удобная для клика */
+QSpinBox {
+    padding-left: 8px;
+    padding-right: 24px;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+QSpinBox::up-button,
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 24px;
+    min-width: 24px;
+    height: 15px;
+    min-height: 15px;
+    border-left: 1px solid #DFE1E6;
+    background-color: #F4F5F7;
+    border-radius: 0;
+}
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-radius: 0 2px 0 0;
+}
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-radius: 0 0 2px 0;
+}
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover {
+    background-color: #DEEBFF;
+}
+QSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed {
+    background-color: #B3D4FF;
+}
+
 QComboBox::drop-down {
     border: none;
     padding-right: 8px;

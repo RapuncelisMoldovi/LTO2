@@ -408,6 +408,24 @@ class DatabaseManager:
         self._audit("VARIANT_INSERT", "variants", variant_id, f"item_id={item_id} size={size_name.strip()} full_code={full_code.strip()}")
         return variant_id
 
+    def update_item(self, item_id: int, name: str, base_code: str, uom: str, item_type: str, category_id: int | None = None):
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE items SET name = ?, base_code = ?, uom = ?, type = ?, category_id = ? WHERE id = ?",
+            (name.strip(), base_code.strip(), uom.strip(), item_type, category_id, item_id),
+        )
+        self.conn.commit()
+        self._audit("ITEM_UPDATE", "items", item_id, f"name={name.strip()} base_code={base_code.strip()}")
+
+    def update_variant(self, variant_id: int, size_name: str, full_code: str):
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE variants SET size_name = ?, full_code = ? WHERE id = ?",
+            (size_name.strip(), full_code.strip(), variant_id),
+        )
+        self.conn.commit()
+        self._audit("VARIANT_UPDATE", "variants", variant_id, f"size={size_name.strip()} full_code={full_code.strip()}")
+
     # --- Units ---
 
     def get_units(self):
@@ -499,6 +517,7 @@ class DatabaseManager:
                 v.id AS variant_id,
                 v.full_code,
                 v.size_name,
+                i.id AS item_id,
                 i.name AS item_name,
                 i.type AS item_type,
                 i.uom AS uom,
@@ -732,11 +751,11 @@ class DatabaseManager:
         return cur.fetchall()
 
     def get_serials_for_item(self, item_id: int):
-        """Возвращает все S/N на складе по всем вариантам изделия (с размером и полным кодом)."""
+        """Возвращает все S/N на складе по всем вариантам изделия (с variant_id для корзины)."""
         cur = self.conn.cursor()
         cur.execute(
             """
-            SELECT ss.factory_sn, v.size_name, v.full_code
+            SELECT ss.factory_sn, v.id AS variant_id, v.size_name, v.full_code
             FROM stock_serial ss
             JOIN variants v ON v.id = ss.variant_id
             WHERE v.item_id = ?
