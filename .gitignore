@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# База данных и бэкапы
+warehouse.db
+backups/
+
+# Логи
+logs/
+*.log
+crash_log.txt
+
+# Сгенерированные файлы
+*.pdf
+
+# IDE
+.vscode/
+.idea/
