@@ -2387,7 +2387,7 @@ class MainWindow(QMainWindow):
         nav_scroll = QWidget()
         nav_scroll.setObjectName("NavArea")
         nav_layout = QVBoxLayout(nav_scroll)
-        nav_layout.setContentsMargins(8, 12, 8, 12)
+        nav_layout.setContentsMargins(16, 16, 16, 16)
         nav_layout.setSpacing(2)
 
         # ─ Секция: Склад
