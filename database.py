@@ -144,9 +144,13 @@ class DatabaseManager:
             """
         )
 
-        # Подразделения по умолчанию — только если таблица пуста (первый запуск)
+        # Подразделения по умолчанию — только при самом первом запуске (пустая БД: нет ни units, ни items).
+        # Если пользователь удалил все подразделения — не восстанавливаем их при перезапуске.
         cur.execute("SELECT COUNT(*) FROM units")
-        if cur.fetchone()[0] == 0:
+        units_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM items")
+        items_count = cur.fetchone()[0]
+        if units_count == 0 and items_count == 0:
             cur.execute("INSERT INTO units(name) VALUES (?)", ("Склад-основной",))
             cur.execute("INSERT INTO units(name) VALUES (?)", ("Цех-1",))
 
@@ -173,175 +177,6 @@ class DatabaseManager:
             data={"db_path": self.path},
         )
         # endregion
-
-        # Если справочник пустой – заполняем образцами
-        cur.execute("SELECT COUNT(*) AS cnt FROM items")
-        row = cur.fetchone()
-        if row and row["cnt"] == 0:
-            self._seed_sample_data()
-
-    def _seed_sample_data(self):
-        cur = self.conn.cursor()
-
-        cur.execute("SELECT id, name FROM categories")
-        cat_by_name = {r["name"]: r["id"] for r in cur.fetchall()}
-
-        # Вспомогательная функция: вставка изделия + вариантов
-        def add_item(name, base_code, uom, itype, cat_name, variants):
-            """variants: list of (size_name, full_code_10digits)"""
-            cat_id = cat_by_name.get(cat_name)
-            cur.execute(
-                "INSERT INTO items(name, base_code, uom, type, category_id) VALUES (?,?,?,?,?)",
-                (name, base_code, uom, itype, cat_id),
-            )
-            iid = cur.lastrowid
-            for size_name, full_code in variants:
-                cur.execute(
-                    "INSERT INTO variants(item_id, size_name, full_code) VALUES (?,?,?)",
-                    (iid, size_name, full_code),
-                )
-                vid = cur.lastrowid
-                if itype == "qty":
-                    cur.execute("INSERT INTO stock_qty(variant_id, quantity) VALUES (?,0)", (vid,))
-
-        # ── ЛТО — одежда (размерный ряд, qty) ───────────────────────────────
-        SIZES_C = ["44-170", "46-170", "48-176", "50-176", "52-182", "54-182", "56-188", "58-188"]
-        SIZES_F = ["39", "40", "41", "42", "43", "44", "45", "46"]
-
-        def variants_sized(base10, sizes):
-            return [(s, base10[:8] + f"{i+1:02d}") for i, s in enumerate(sizes)]
-
-        lto_clothing = [
-            ("Костюм лётный летний",             "1776000101", "шт", SIZES_C),
-            ("Костюм лётный зимний",             "1776000201", "шт", SIZES_C),
-            ("Куртка лётная демисезонная",        "1776000301", "шт", SIZES_C),
-            ("Куртка лётная зимняя утеплённая",   "1776000401", "шт", SIZES_C),
-            ("Брюки лётные летние",               "1776000501", "шт", SIZES_C),
-            ("Брюки лётные зимние",               "1776000601", "шт", SIZES_C),
-            ("Комбинезон лётный лёгкий",          "1776000701", "шт", SIZES_C),
-            ("Комбинезон технический",            "1776000801", "шт", SIZES_C),
-            ("Рубашка форменная длинный рукав",   "1776000901", "шт", SIZES_C),
-            ("Рубашка форменная короткий рукав",  "1776001001", "шт", SIZES_C),
-            ("Майка форменная",                   "1776001101", "шт", SIZES_C),
-            ("Кепи форменное летнее",             "1776001201", "шт", SIZES_C),
-            ("Кепи форменное зимнее",             "1776001301", "шт", SIZES_C),
-            ("Берет форменный",                   "1776001401", "шт", SIZES_C),
-            ("Пилотка",                           "1776001501", "шт", SIZES_C),
-            ("Шапка-ушанка меховая",              "1776001601", "шт", SIZES_C),
-            ("Перчатки лётные кожаные",           "1776001701", "шт", SIZES_C),
-            ("Перчатки зимние утеплённые",        "1776001801", "шт", SIZES_C),
-            ("Шарф форменный шерстяной",          "1776001901", "шт", SIZES_C),
-            ("Галстук форменный",                 "1776002001", "шт", SIZES_C),
-            ("Ремень поясной форменный",          "1776002101", "шт", SIZES_C),
-            ("Носки форменные хлопок",            "1776002201", "шт", SIZES_C),
-            ("Носки форменные шерстяные",         "1776002301", "шт", SIZES_C),
-            ("Нательное бельё комплект летний",   "1776002401", "шт", SIZES_C),
-            ("Нательное бельё комплект зимний",   "1776002501", "шт", SIZES_C),
-        ]
-        lto_footwear = [
-            ("Ботинки лётные хромовые",   "1776100101", "пар", SIZES_F),
-            ("Сапоги форменные хромовые", "1776100201", "пар", SIZES_F),
-            ("Полуботинки форменные",     "1776100301", "пар", SIZES_F),
-            ("Ботинки зимние утеплённые", "1776100401", "пар", SIZES_F),
-        ]
-
-        for name, base10, uom, sizes in lto_clothing:
-            add_item(name, base10, uom, "qty", "ЛТО", variants_sized(base10, sizes))
-        for name, base10, uom, sizes in lto_footwear:
-            add_item(name, base10, uom, "qty", "ЛТО", variants_sized(base10, sizes))
-
-        # ── ПДИ — серийный учёт ──────────────────────────────────────────────
-        pdi_items = [
-            ("Парашют десантный Д-10",           "9306000101"),
-            ("Парашют десантный Д-6 серия 4",    "9306000201"),
-            ("Парашют запасной З-5",             "9306000301"),
-            ("Парашют запасной З-6П",            "9306000401"),
-            ("Страховочный прибор ППК-У",        "9306000501"),
-            ("Страховочный прибор ППКУ-165А",    "9306000601"),
-            ("Ранец парашюта основной",          "9306000701"),
-            ("Ранец парашюта запасной",          "9306000801"),
-            ("Карабин страховочный десантный",   "9306000901"),
-            ("Грузовой контейнер УГКП-500",      "9306001001"),
-            ("Подвесная система ПС-Д10",         "9306001101"),
-            ("Вытяжной фал 15м",                 "9306001201"),
-            ("Кольцо вытяжного троса",           "9306001301"),
-            ("Шпилька предохранительная",        "9306001401"),
-            ("Соединительное звено",             "9306001501"),
-            ("Слинг стропы 7мм",                 "9306001601"),
-            ("Чехол стабилизирующего купола",    "9306001701"),
-            ("Укладочная доска",                 "9306001801"),
-            ("Прибор контроля укладки",          "9306001901"),
-            ("Сумка укладчика",                  "9306002001"),
-            ("Журнал контроля парашюта",         "9306002101"),
-            ("Паспорт парашюта",                 "9306002201"),
-        ]
-        for name, base10 in pdi_items:
-            add_item(name, base10, "шт", "serial", "ПДИ", [("Без размера", base10)])
-
-        # ── Высотное снаряжение ──────────────────────────────────────────────
-        high_serial = [
-            ("Каска альпинистская PETZL Vertex",            "6506000101"),
-            ("Каска защитная CAMP Ares",                    "6506000201"),
-            ("Беседка страховочная Singing Rock",           "6506000301"),
-            ("Беседка комбинированная CAMP Jasper CR3",     "6506000401"),
-            ("Жумар левый PETZL Ascension",                 "6506000501"),
-            ("Жумар правый PETZL Ascension",                "6506000601"),
-            ("Рюкзак-контейнер для верёвки 70л",            "6506000701"),
-            ("Спусковое устройство PETZL Pirana",           "6506000801"),
-            ("Спусковое устройство CAMP Raft",              "6506000901"),
-            ("Тянущее устройство PETZL BASIC",              "6506001001"),
-            ("Блок-ролик одинарный PETZL Fixe",             "6506001101"),
-            ("Блок-ролик двойной PETZL Tandem",             "6506001201"),
-            ("Страховочное устройство PETZL GriGri",        "6506001301"),
-            ("Карабин D-образный муфтованный",              "6506001401"),
-            ("Карабин HMS муфтованный",                     "6506001501"),
-        ]
-        high_qty = [
-            ("Верёвка статическая 10мм (бухта 50м)",  "5607000101", "м"),
-            ("Верёвка статическая 11мм (бухта 50м)",  "5607000201", "м"),
-            ("Верёвка динамическая 9мм (бухта 60м)",  "5607000301", "м"),
-            ("Стропа петлевая 16мм (бухта 50м)",      "5607000401", "м"),
-            ("Репшнур 6мм (бухта 30м)",               "5607000501", "м"),
-            ("Петля готовая из стропы 120см",         "5607000601", "шт"),
-            ("Лента стропа 25мм (бухта 50м)",         "5607000701", "м"),
-        ]
-        for name, base10 in high_serial:
-            add_item(name, base10, "шт", "serial", "Высотное снаряжение", [("Без размера", base10)])
-        for name, base10, uom in high_qty:
-            add_item(name, base10, uom, "qty", "Высотное снаряжение", [("Без размера", base10)])
-
-        # ── Чехлы и палатки — qty ────────────────────────────────────────────
-        tents_items = [
-            ("Палатка армейская 2-местная УСБ-56",   "6301000101", "шт"),
-            ("Палатка армейская 4-местная ПБ-1",     "6301000201", "шт"),
-            ("Палатка 10-местная ПУС-2",             "6301000301", "шт"),
-            ("Палатка командно-штабная КШМ-4",       "6301000401", "шт"),
-            ("Тент армейский маскировочный 12×12м",  "6301000501", "шт"),
-            ("Тент армейский защитный 6×9м",         "6301000601", "шт"),
-            ("Чехол для парашюта Д-10",              "6301000701", "шт"),
-            ("Чехол для парашюта З-5",               "6301000801", "шт"),
-            ("Чехол для карабина АКМ",               "6301000901", "шт"),
-            ("Чехол для карабина АК-74",             "6301001001", "шт"),
-            ("Чехол для пулемёта РПК",               "6301001101", "шт"),
-            ("Чехол для снайперской винтовки",       "6301001201", "шт"),
-            ("Чехол для бинокля",                    "6301001301", "шт"),
-            ("Чехол для радиостанции Р-168",         "6301001401", "шт"),
-            ("Мешок вещевой армейский",              "6301001501", "шт"),
-            ("Рюкзак полевой 60л",                   "6301001601", "шт"),
-            ("Рюкзак десантный РД-54",               "6301001701", "шт"),
-            ("Сумка полевая командира",              "6301001801", "шт"),
-            ("Сумка медицинская войсковая",          "6301001901", "шт"),
-            ("Спальный мешок летний",                "6301002001", "шт"),
-            ("Спальный мешок зимний -20°C",          "6301002101", "шт"),
-            ("Коврик пенополиуретановый",            "6301002201", "шт"),
-            ("Накидка плащ-палатка",                 "6301002301", "шт"),
-            ("Куртка дождевая",                      "6301002401", "шт"),
-            ("Чехол для касок комплект 10шт",        "6301002501", "компл"),
-        ]
-        for name, base10, uom in tents_items:
-            add_item(name, base10, uom, "qty", "Чехлы и палатки", [("Без размера", base10)])
-
-        self.conn.commit()
 
     # --- Items & Variants ---
 
@@ -407,6 +242,122 @@ class DatabaseManager:
         self.conn.commit()
         self._audit("VARIANT_INSERT", "variants", variant_id, f"item_id={item_id} size={size_name.strip()} full_code={full_code.strip()}")
         return variant_id
+
+    # Во второй колонке Excel: строка с одним из этих значений задаёт базовый н/н изделия (колонка C); остальные строки с тем же наименованием — размеры.
+    EXCEL_BASE_ROW_MARKERS = ("н/н (базовый)", "Без размера")
+
+    def import_nomenclature_from_excel(
+        self,
+        file_path: str,
+        category_id: int | None = None,
+        *,
+        skip_header_row: bool = True,
+    ) -> tuple[int, int, list[str]]:
+        """
+        Импорт номенклатуры из Excel.
+        Колонки: A — наименование, B — размер/маркер, C — н/н, D — ед. изм., E — тип учёта.
+        E пусто — материальные средства (qty), без заводского номера при поступлении/выдаче.
+        E = «sn» — основные средства (serial), требуется заводской номер при поступлении и выдаче.
+        """
+        try:
+            import openpyxl
+        except ImportError:
+            return 0, 0, ["Установите openpyxl: pip install openpyxl"]
+
+        errors: list[str] = []
+        items_added = 0
+        variants_added = 0
+        markers = tuple(m.strip() for m in self.EXCEL_BASE_ROW_MARKERS)
+
+        def _is_base_row(col_b: str | None) -> bool:
+            if col_b is None:
+                return False
+            s = str(col_b).strip()
+            return any(s == m or s.lower() == m.lower() for m in markers)
+
+        def _excel_type_to_item_type(col_e: str | None) -> str:
+            """Колонка E: пусто → qty (мат. средства), «sn» → serial (основные средства)."""
+            if col_e is None:
+                return "qty"
+            s = str(col_e).strip().lower()
+            return "serial" if s == "sn" else "qty"
+
+        try:
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            ws = wb.active
+            if ws is None:
+                wb.close()
+                return 0, 0, ["В книге нет активного листа"]
+
+            rows: list[tuple[str, str, str, str, str]] = []
+            for row in ws.iter_rows(min_row=1, max_col=5, values_only=True):
+                if not row or row[0] is None:
+                    continue
+                name = (row[0] or "").strip()
+                if not name:
+                    continue
+                col_b = (row[1] if len(row) > 1 else None) or ""
+                col_b = str(col_b).strip()
+                code = (row[2] if len(row) > 2 else None) or ""
+                code = str(code).strip()
+                uom = (row[3] if len(row) > 3 else None) or ""
+                uom = str(uom).strip() or "шт"
+                col_e = (row[4] if len(row) > 4 else None) or ""
+                rows.append((name, col_b, code, uom, str(col_e).strip()))
+            wb.close()
+
+            if skip_header_row and rows:
+                first_cell = str(rows[0][0]).strip().lower()
+                if first_cell in ("наименование", "название", "name", "номер", "n", "наименование изделия"):
+                    rows = rows[1:]
+        except Exception as e:
+            return 0, 0, [f"Ошибка чтения файла: {e}"]
+
+        if not rows:
+            return 0, 0, ["В файле нет данных (ожидаются колонки: наименование, размер/маркер, н/н, ед. изм., тип [sn или пусто])."]
+
+        from itertools import groupby
+
+        def _name_key(r):
+            return r[0]
+
+        for name, group in groupby(sorted(rows, key=_name_key), key=_name_key):
+            group_list = list(group)
+            base_row = next((r for r in group_list if _is_base_row(r[1])), None)
+            if not base_row:
+                errors.append(f"«{name}»: нет строки с маркером «н/н (базовый)» или «Без размера» во второй колонке")
+                continue
+            base_code = base_row[2].strip() if base_row[2] else ""
+            if not base_code:
+                errors.append(f"«{name}»: в базовой строке (н/н (базовый) или Без размера) не указан номенклатурный номер (колонка C)")
+                continue
+            uom = base_row[3] or "шт"
+            item_type = _excel_type_to_item_type(base_row[4] if len(base_row) > 4 else None)
+
+            try:
+                item_id = self.add_item(name, base_code, uom, item_type, category_id)
+                items_added += 1
+            except sqlite3.IntegrityError as e:
+                errors.append(f"«{name}»: не удалось добавить изделие — {e}")
+                continue
+
+            for row in group_list:
+                _name, col_b, code, _uom = row[0], row[1], row[2], row[3]
+                if _is_base_row(col_b):
+                    size_name = "Без размера"
+                    full_code = base_code
+                else:
+                    size_name = col_b or "Без размера"
+                    full_code = code.strip() if code else base_code
+                if not full_code:
+                    full_code = base_code
+                try:
+                    self.add_variant(item_id, size_name, full_code, item_type)
+                    variants_added += 1
+                except sqlite3.IntegrityError:
+                    errors.append(f"«{name}», размер «{size_name}»: дубликат н/н «{full_code}» — пропущено")
+
+        return items_added, variants_added, errors
 
     def update_item(self, item_id: int, name: str, base_code: str, uom: str, item_type: str, category_id: int | None = None):
         cur = self.conn.cursor()

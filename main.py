@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QToolButton,
+    QMenu,
 )
 
 
@@ -105,8 +106,11 @@ def _backup_db(db_path: str) -> None:
 
 
 def _patch_calendar_arrows(date_edit) -> None:
-    """Убирает встроенные чёрные стрелки QCalendarWidget и ставит белые PNG-иконки."""
+    """Убирает встроенные чёрные стрелки QCalendarWidget и ставит белые PNG-иконки (с учётом HiDPI)."""
     cal = date_edit.calendarWidget()
+    dpr = _device_pixel_ratio()
+    w, h = 14, 18
+    size_px = QSize(int(round(w * dpr)), int(round(h * dpr)))
     for name, icon_name in [
         ("qt_calendar_prevmonth", "arrow-left-white"),
         ("qt_calendar_nextmonth", "arrow-right-white"),
@@ -114,9 +118,11 @@ def _patch_calendar_arrows(date_edit) -> None:
         btn = cal.findChild(QToolButton, name)
         if btn:
             btn.setArrowType(Qt.ArrowType.NoArrow)
-            # Загружаем иконку, принудительно окрашиваем в белый через CompositionMode
-            raw = _icon_from_file(icon_name, 14).pixmap(QSize(14, 18))
+            raw = _icon_from_file(icon_name, 14).pixmap(size_px)
+            if not raw.isNull():
+                raw.setDevicePixelRatio(dpr)
             white = QPixmap(raw.size())
+            white.setDevicePixelRatio(dpr)
             white.fill(QColor(0, 0, 0, 0))
             p = QPainter(white)
             p.drawPixmap(0, 0, raw)
@@ -124,7 +130,7 @@ def _patch_calendar_arrows(date_edit) -> None:
             p.fillRect(white.rect(), QColor("#FFFFFF"))
             p.end()
             btn.setIcon(QIcon(white))
-            btn.setIconSize(QSize(14, 18))
+            btn.setIconSize(QSize(w, h))
 
 
 class QuantitySpinBox(QWidget):
@@ -144,8 +150,8 @@ class QuantitySpinBox(QWidget):
         self._minus_btn.setFixedSize(36, 32)
         self._minus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._minus_btn.setStyleSheet(
-            "QPushButton { background:#0052CC; color:#FFFFFF; border:1px solid #B3BAC5; "
-            "border-right:none; border-radius:4px 0 0 4px; font-size:18px; font-weight:bold; }"
+            "QPushButton { background:#0052CC; color:#FFFFFF; "
+            "font-size:18px; font-weight:bold; }"
             "QPushButton:hover { background:#0747A6; }"
             "QPushButton:pressed { background:#043584; }"
             "QPushButton:disabled { background:#DFE1E6; color:#97A0AF; }"
@@ -159,8 +165,8 @@ class QuantitySpinBox(QWidget):
         self._value_edit.setValidator(QIntValidator(1, 1_000_000))
         self._value_edit.setText("1")
         self._value_edit.setStyleSheet(
-            "QLineEdit { background:#FFFFFF; color:#172B4D; border:1px solid #B3BAC5; "
-            "border-left:none; border-right:none; font-size:14px; padding:0 4px; }"
+            "QLineEdit { background:#FFFFFF; color:#172B4D; border:none; "
+            "border-radius:8px; font-size:14px; padding:0 4px; outline:none; }"
         )
         self._value_edit.returnPressed.connect(self._commit_edit)
         self._value_edit.editingFinished.connect(self._commit_edit)
@@ -169,8 +175,8 @@ class QuantitySpinBox(QWidget):
         self._plus_btn.setFixedSize(36, 32)
         self._plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._plus_btn.setStyleSheet(
-            "QPushButton { background:#0052CC; color:#FFFFFF; border:1px solid #B3BAC5; "
-            "border-left:none; border-radius:0 4px 4px 0; font-size:18px; font-weight:bold; }"
+            "QPushButton { background:#0052CC; color:#FFFFFF;"
+            "font-size:18px; font-weight:bold; }"
             "QPushButton:hover { background:#0747A6; }"
             "QPushButton:pressed { background:#043584; }"
             "QPushButton:disabled { background:#DFE1E6; color:#97A0AF; }"
@@ -230,6 +236,14 @@ class QuantitySpinBox(QWidget):
 
 
 
+def _device_pixel_ratio() -> float:
+    """Коэффициент масштабирования экрана (HiDPI). 1.0 = 96 DPI, 2.0 = Retina и т.д."""
+    app = QApplication.instance()
+    if app and app.primaryScreen():
+        return app.primaryScreen().devicePixelRatio()
+    return 1.0
+
+
 def _icon_path(base_name: str) -> str | None:
     """Возвращает путь к иконке в icons/ (только .png). base_name — без расширения."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -249,13 +263,19 @@ def _logo_path() -> str | None:
 
 
 def _icon_from_file(base_name: str, size: int = 20) -> QIcon:
-    """Загружает иконку PNG из папки icons/. base_name — без расширения."""
+    """Загружает иконку PNG из icons/ с учётом HiDPI (_device_pixel_ratio).
+    Использовать для всех кнопок с иконками (Экспорт в Excel/PDF, тулбары и т.д.)."""
     path = _icon_path(base_name)
     if not path:
         return QIcon()
+    dpr = _device_pixel_ratio()
     pix = QPixmap(path)
-    if not pix.isNull() and (pix.width() != size or pix.height() != size):
-        pix = pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    if pix.isNull():
+        return QIcon()
+    target = int(round(size * dpr))
+    if pix.width() != target or pix.height() != target:
+        pix = pix.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    pix.setDevicePixelRatio(dpr)
     return QIcon(pix)
 
 
@@ -278,7 +298,6 @@ class NewItemDialog(QDialog):
         self.edit_item_id = edit_item_id
         self.setWindowTitle("Редактировать изделие" if edit_item_id else "Создать изделие")
         self.item_type = "qty"
-        self._categories = []
         self._build_ui()
         if edit_item_id:
             row = self.db.get_item(edit_item_id)
@@ -286,9 +305,6 @@ class NewItemDialog(QDialog):
                 self.name_edit.setText(row["name"] or "")
                 self.base_code_edit.setText(row["base_code"] or "")
                 self.uom_edit.setText(row["uom"] or "шт")
-                self.category_combo.setCurrentIndex(
-                    next((i for i in range(self.category_combo.count()) if self.category_combo.itemData(i) == row["category_id"]), 0)
-                )
                 self.qty_radio.setChecked(row["type"] == "qty")
                 self.serial_radio.setChecked(row["type"] == "serial")
 
@@ -309,14 +325,6 @@ class NewItemDialog(QDialog):
         form.addRow("Название:", self.name_edit)
         form.addRow("Н/Н (базовый):", self.base_code_edit)
         form.addRow("Ед. изм.:", self.uom_edit)
-
-        # Выбор категории
-        self.category_combo = QComboBox()
-        self._categories = self.db.get_categories()
-        self.category_combo.addItem("— без категории —", None)
-        for cat in self._categories:
-            self.category_combo.addItem(cat["name"], cat["id"])
-        form.addRow("Категория:", self.category_combo)
 
         type_layout = QHBoxLayout()
         self.qty_radio = QRadioButton("Мат. средства")
@@ -350,8 +358,7 @@ class NewItemDialog(QDialog):
         base_code = self.base_code_edit.text().strip()
         uom = self.uom_edit.text().strip()
         item_type = "qty" if self.qty_radio.isChecked() else "serial"
-        category_id = self.category_combo.currentData()
-        return name, base_code, uom, item_type, category_id
+        return name, base_code, uom, item_type, None
 
     def accept(self):
         name, base_code, uom, _, _cat = self.get_data()
@@ -429,85 +436,173 @@ class NomenclatureTab(QWidget):
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
         self.db = db
-        self.current_item_id: int | None = None
-        self._variants: list = []
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._apply_nom_filter)
         self._build_ui()
-        self.load_items()
+        self.reload()
 
     def _build_ui(self):
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(24, 20, 24, 20)
-        main_layout.setSpacing(16)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
 
-        # Левая часть: изделия
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(QLabel("Изделия:"))
-        self.items_list = QListWidget()
-        left_layout.addWidget(self.items_list)
-        items_btn_row = QHBoxLayout()
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Поиск:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("По наименованию и номенклатурному номеру…")
+        search_row.addWidget(self.search_edit)
+        layout.addLayout(search_row)
+
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["Н/Н (базовый)", "Название", "Размер", "Ед. изм."])
+        header = self.tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setStretchLastSection(False)
+        self.tree.setColumnWidth(0, 150)
+        self.tree.setColumnWidth(2, 120)
+        self.tree.setColumnWidth(3, 70)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setIndentation(16)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setExpandsOnDoubleClick(True)
+        self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tree.setSortingEnabled(True)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_nom_context_menu)
+        self.tree.itemClicked.connect(self._on_nom_item_clicked)
+        self.search_edit.textChanged.connect(lambda _: self._search_timer.start())
+        layout.addWidget(self.tree)
+
+        btn_row = QHBoxLayout()
         self.new_item_btn = QPushButton("Создать изделие")
         self.edit_item_btn = QPushButton("Редактировать")
         self.delete_item_btn = QPushButton("Удалить")
         self.delete_item_btn.setObjectName("DangerBtn")
-        items_btn_row.addWidget(self.new_item_btn)
-        items_btn_row.addWidget(self.edit_item_btn)
-        items_btn_row.addWidget(self.delete_item_btn)
-        left_layout.addLayout(items_btn_row)
+        self.import_excel_btn = QPushButton("Загрузить из Excel…")
+        btn_row.addWidget(self.new_item_btn)
+        btn_row.addWidget(self.edit_item_btn)
+        btn_row.addWidget(self.delete_item_btn)
+        btn_row.addWidget(self.import_excel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
-        # Правая часть: варианты
-        right_layout = QVBoxLayout()
-        right_layout.addWidget(QLabel("Варианты (размеры):"))
-        self.variants_list = QListWidget()
-        right_layout.addWidget(self.variants_list)
-        variants_btn_row = QHBoxLayout()
-        self.new_variant_btn = QPushButton("Добавить размер")
-        self.edit_variant_btn = QPushButton("Редактировать")
-        self.delete_variant_btn = QPushButton("Удалить")
-        self.delete_variant_btn.setObjectName("DangerBtn")
-        variants_btn_row.addWidget(self.new_variant_btn)
-        variants_btn_row.addWidget(self.edit_variant_btn)
-        variants_btn_row.addWidget(self.delete_variant_btn)
-        right_layout.addLayout(variants_btn_row)
-
-        main_layout.addLayout(left_layout, 1)
-        main_layout.addLayout(right_layout, 1)
-
-        self.items_list.currentRowChanged.connect(self.on_item_selected)
         self.new_item_btn.clicked.connect(self.on_new_item)
         self.edit_item_btn.clicked.connect(self.on_edit_item)
         self.delete_item_btn.clicked.connect(self.on_delete_item)
-        self.new_variant_btn.clicked.connect(self.on_new_variant)
-        self.edit_variant_btn.clicked.connect(self.on_edit_variant)
-        self.delete_variant_btn.clicked.connect(self.on_delete_variant)
+        self.import_excel_btn.clicked.connect(self.on_import_from_excel)
 
-    def load_items(self):
-        self.items_list.clear()
-        self.current_item_id = None
-        self._items = self.db.get_items()
-        for row in self._items:
-            text = f"{row['name']}  [{row['base_code']}]"
-            self.items_list.addItem(text)
-        if self._items:
-            self.items_list.setCurrentRow(0)
+    def _selected_item_id(self) -> int | None:
+        """Возвращает id изделия по текущей выбранной строке (сама строка или дочерняя)."""
+        current = self.tree.currentItem()
+        if not current:
+            return None
+        item_id = current.data(0, Qt.ItemDataRole.UserRole)
+        if item_id is not None:
+            return item_id
+        parent = current.parent()
+        return parent.data(0, Qt.ItemDataRole.UserRole) if parent else None
 
-    def load_variants(self, item_id: int | None):
-        self.variants_list.clear()
-        self._variants = []
+    def _on_nom_item_clicked(self, item: QTreeWidgetItem, column: int):
+        if item.childCount() > 0:
+            item.setExpanded(not item.isExpanded())
+
+    def _on_nom_context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if not item:
+            return
+        item_id = item.data(0, Qt.ItemDataRole.UserRole)
         if item_id is None:
             return
-        self._variants = self.db.get_variants_for_item(item_id)
-        for v in self._variants:
-            text = f"{_size_display(v['size_name'])}  [{v['full_code']}]"
-            self.variants_list.addItem(text)
-
-    def on_item_selected(self, index: int):
-        if index < 0 or index >= len(getattr(self, "_items", [])):
-            self.current_item_id = None
-            self.variants_list.clear()
+        parent = item.parent()
+        if parent is not None:
             return
-        item_row = self._items[index]
-        self.current_item_id = item_row["id"]
-        self.load_variants(self.current_item_id)
+        menu = QMenu(self)
+        add_size_action = menu.addAction("Добавить размер")
+        action = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if action == add_size_action:
+            self._add_variant_for_item(item_id)
+
+    def _add_variant_for_item(self, item_id: int):
+        item_row = self.db.get_item(item_id)
+        if not item_row:
+            return
+        base_code = item_row["base_code"]
+        item_type = item_row["type"]
+        dlg = NewVariantDialog(base_code, self, db=self.db)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            size_name, full_code = dlg.get_data()
+            try:
+                self.db.add_variant(item_id, size_name, full_code, item_type)
+            except sqlite3.IntegrityError as e:
+                if logger:
+                    logger.warning("Add variant duplicate: %s", e)
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Вариант с таким полным кодом уже существует.",
+                )
+                return
+            self.reload()
+
+    def reload(self):
+        self.tree.clear()
+        items = self.db.get_items()
+        for row in items:
+            top = QTreeWidgetItem(self.tree)
+            top.setText(0, row["base_code"])
+            top.setText(1, row["name"])
+            top.setText(2, "")
+            top.setText(3, row["uom"] or "шт")
+            top.setData(0, Qt.ItemDataRole.UserRole, row["id"])
+            top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            variants = self.db.get_variants_for_item(row["id"])
+            # Не показываем в дочерних строках вариант «Без размера» — он дублирует материнскую строку (базовый н/н)
+            size_variants = [
+                v for v in variants
+                if (v["size_name"] or "").strip().lower() != "без размера"
+            ]
+            if not size_variants:
+                top.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator)
+            else:
+                for v in size_variants:
+                    child = QTreeWidgetItem(top)
+                    child.setText(0, v["full_code"])
+                    child.setText(1, "")
+                    child.setText(2, _size_display(v["size_name"]))
+                    child.setText(3, row["uom"] or "шт")
+                    child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    child.setData(0, Qt.ItemDataRole.UserRole, None)
+                top.setExpanded(False)
+        self._apply_nom_filter()
+
+    def _apply_nom_filter(self):
+        """Показать/скрыть строки дерева по поиску (наименование, базовый и полный н/н)."""
+        text = self.search_edit.text().strip().lower()
+        root = self.tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            top = root.child(i)
+            visible = self._nom_item_matches(top, text)
+            top.setHidden(not visible)
+
+    def _nom_item_matches(self, item: QTreeWidgetItem, text: str) -> bool:
+        """True, если узел или его дети содержат текст в наименовании или н/н."""
+        if not text:
+            return True
+        for c in range(item.columnCount()):
+            if text in (item.text(c) or "").lower():
+                return True
+        for i in range(item.childCount()):
+            child = item.child(i)
+            for c in range(child.columnCount()):
+                if text in (child.text(c) or "").lower():
+                    return True
+        return False
 
     def on_new_item(self):
         dlg = NewItemDialog(self.db, self)
@@ -520,59 +615,13 @@ class NomenclatureTab(QWidget):
                     logger.warning("Add item failed: %s", e)
                 QMessageBox.warning(self, "Ошибка", f"Не удалось создать изделие:\n{e}")
                 return
-            self.load_items()
-
-            # Сразу предлагаем добавить первый вариант — без варианта изделие
-            # не появится в поиске при проведении операций
-            reply = QMessageBox.question(
-                self, "Добавить вариант",
-                f"Изделие «{name}» создано.\n\n"
-                "Чтобы проводить операции, нужен хотя бы один вариант (размер).\n"
-                "Добавить вариант сейчас?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                # Выбираем только что созданное изделие и открываем диалог варианта
-                for i, r in enumerate(self._items):
-                    if r["id"] == new_id:
-                        self.items_list.setCurrentRow(i)
-                        break
-                self.on_new_variant()
-
-    def on_new_variant(self):
-        if self.current_item_id is None:
-            QMessageBox.warning(self, "Ошибка", "Сначала выберите изделие.")
-            return
-        item_row = self.db.get_item(self.current_item_id)
-        if item_row is None:
-            QMessageBox.warning(self, "Ошибка", "Изделие не найдено.")
-            return
-        base_code = item_row["base_code"]
-        item_type = item_row["type"]
-
-        dlg = NewVariantDialog(base_code, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            size_name, full_code = dlg.get_data()
-            try:
-                self.db.add_variant(self.current_item_id, size_name, full_code, item_type)
-            except sqlite3.IntegrityError as e:
-                if logger:
-                    logger.warning("Add variant duplicate: %s", e)
-                QMessageBox.warning(
-                    self,
-                    "Ошибка",
-                    "Вариант с таким полным кодом уже существует.",
-                )
-                return
-            self.load_variants(self.current_item_id)
+            self.reload()
 
     def on_edit_item(self):
-        idx = self.items_list.currentRow()
-        if idx < 0 or idx >= len(getattr(self, "_items", [])):
+        item_id = self._selected_item_id()
+        if item_id is None:
             QMessageBox.warning(self, "Ошибка", "Выберите изделие для редактирования.")
             return
-        item_id = self._items[idx]["id"]
         dlg = NewItemDialog(self.db, self, edit_item_id=item_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             name, base_code, uom, item_type, category_id = dlg.get_data()
@@ -581,20 +630,19 @@ class NomenclatureTab(QWidget):
             except sqlite3.IntegrityError as e:
                 if logger:
                     logger.warning("Update item failed: %s", e)
-                QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить изделие (возможно, дубликат Н/Н):\n{e}")
+                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить изделие (возможно, дубликат Н/Н).")
                 return
-            self.load_items()
-            self.load_variants(self.current_item_id)
+            self.reload()
 
     def on_delete_item(self):
-        idx = self.items_list.currentRow()
-        if idx < 0 or idx >= len(getattr(self, "_items", [])):
+        item_id = self._selected_item_id()
+        if item_id is None:
             QMessageBox.warning(self, "Удаление", "Выберите изделие для удаления.")
             return
-        item_row = self._items[idx]
-        item_id = item_row["id"]
+        item_row = self.db.get_item(item_id)
+        if not item_row:
+            return
         item_name = item_row["name"]
-
         has_history = self.db.has_journal_entries_for_item(item_id)
         if has_history:
             msg = (
@@ -604,7 +652,6 @@ class NomenclatureTab(QWidget):
             )
         else:
             msg = f"Удалить изделие «{item_name}» и все его варианты?"
-
         reply = QMessageBox.question(
             self, "Подтверждение удаления", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -612,7 +659,6 @@ class NomenclatureTab(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-
         try:
             self.db.delete_item(item_id)
             if logger:
@@ -622,71 +668,33 @@ class NomenclatureTab(QWidget):
                 logger.exception("Delete item failed: %s", e)
             QMessageBox.critical(self, "Ошибка", f"Не удалось удалить изделие:\n{e}")
             return
+        self.reload()
 
-        self.load_items()
-
-    def on_edit_variant(self):
-        if self.current_item_id is None:
-            QMessageBox.warning(self, "Ошибка", "Выберите изделие.")
-            return
-        idx = self.variants_list.currentRow()
-        if idx < 0 or idx >= len(self._variants):
-            QMessageBox.warning(self, "Ошибка", "Выберите вариант (размер) для редактирования.")
-            return
-        variant = self._variants[idx]
-        variant_id = variant["id"]
-        item_row = self._items[self.items_list.currentRow()] if 0 <= self.items_list.currentRow() < len(self._items) else None
-        base_code = item_row["base_code"] if item_row else ""
-        dlg = NewVariantDialog(base_code, self, db=self.db, edit_variant_id=variant_id)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            size_name, full_code = dlg.get_data()
-            try:
-                self.db.update_variant(variant_id, size_name, full_code)
-            except sqlite3.IntegrityError as e:
-                if logger:
-                    logger.warning("Update variant failed: %s", e)
-                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить вариант (возможно, дубликат полного Н/Н).")
-                return
-            self.load_variants(self.current_item_id)
-
-    def on_delete_variant(self):
-        idx = self.variants_list.currentRow()
-        if idx < 0 or idx >= len(self._variants):
-            QMessageBox.warning(self, "Удаление", "Выберите размер для удаления.")
-            return
-        v = self._variants[idx]
-        variant_id = v["id"]
-        label = f"{_size_display(v['size_name'])} [{v['full_code']}]"
-
-        has_history = self.db.has_journal_entries_for_variant(variant_id)
-        if has_history:
-            msg = (
-                f"Вариант «{label}» имеет историю операций.\n"
-                "Удаление удалит остатки и записи журнала по этому варианту.\n\n"
-                "Вы уверены?"
-            )
-        else:
-            msg = f"Удалить вариант «{label}»?"
-
-        reply = QMessageBox.question(
-            self, "Подтверждение удаления", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+    def on_import_from_excel(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Загрузить номенклатуру из Excel",
+            "",
+            "Excel (*.xlsx);;Все файлы (*)",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not path:
             return
-
-        try:
-            self.db.delete_variant(variant_id)
-            if logger:
-                logger.info("Variant deleted: id=%s label=%s", variant_id, label)
-        except Exception as e:
-            if logger:
-                logger.exception("Delete variant failed: %s", e)
-            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить вариант:\n{e}")
+        items_added, variants_added, errors = self.db.import_nomenclature_from_excel(path, category_id=None)
+        if items_added == 0 and variants_added == 0 and not errors:
+            QMessageBox.information(self, "Импорт", "В файле нет данных для импорта.")
             return
-
-        self.load_variants(self.current_item_id)
+        if errors and (items_added == 0 and variants_added == 0):
+            QMessageBox.warning(
+                self,
+                "Ошибка импорта",
+                "Импорт не выполнен.\n\n" + "\n".join(errors[:15]) + ("\n…" if len(errors) > 15 else ""),
+            )
+            return
+        self.reload()
+        msg = f"Импортировано: {items_added} изделий, {variants_added} вариантов."
+        if errors:
+            msg += "\n\nПредупреждения:\n" + "\n".join(errors[:10]) + ("\n…" if len(errors) > 10 else "")
+        QMessageBox.information(self, "Импорт из Excel", msg)
 
 
 class OperationDetailDialog(QDialog):
@@ -715,12 +723,12 @@ class OperationDetailDialog(QDialog):
 
         def _lbl_key(text):
             l = QLabel(text)
-            l.setStyleSheet("color:#6B778C; font-size:11px; font-weight:600; background:transparent;")
+            l.setStyleSheet("color:#6B778C; font-size:11px; font-weight:600; background:transparent; border:none; outline:none;")
             return l
 
         def _lbl_val(text):
             l = QLabel(text)
-            l.setStyleSheet("color:#172B4D; font-size:13px; background:transparent;")
+            l.setStyleSheet("color:#172B4D; font-size:13px; background:transparent; border:none; outline:none;")
             return l
 
         hf_layout.addWidget(_lbl_key("ДОКУМЕНТ"),       0, 0)
@@ -1028,7 +1036,7 @@ class BasketDialog(QDialog):
             QTableWidget {{
                 background: #FFFFFF;
                 border: 1px solid #DFE1E6;
-                border-radius: 4px;
+                border-radius: 8px;
                 gridline-color: #F4F5F7;
                 outline: none;
                 color: #172B4D;
@@ -1629,13 +1637,13 @@ class OperationsTab(QWidget):
         if n > 0:
             self.basket_btn.setStyleSheet(
                 "QPushButton#BasketBtn { background:#0052CC; color:#FFFFFF;"
-                " border:none; border-radius:3px; font-weight:600; }"
+                " border:none; border-radius:8px; font-weight:600; }"
                 "QPushButton#BasketBtn:hover { background:#0747A6; }"
             )
         else:
             self.basket_btn.setStyleSheet(
                 "QPushButton#BasketBtn { background:transparent; color:#6B778C;"
-                " border:1px solid #B3BAC5; border-radius:3px; font-weight:400; }"
+                " border:1px solid #B3BAC5; border-radius:8px; font-weight:400; }"
                 "QPushButton#BasketBtn:hover { background:#F4F5F7; }"
             )
 
@@ -1911,7 +1919,6 @@ class StockTab(QWidget):
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
         self.db = db
-        self._group_by_category = False
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -1930,18 +1937,6 @@ class StockTab(QWidget):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Начните вводить для поиска...")
         search_layout.addWidget(self.search_edit)
-
-        # Переключатель вид
-        self.view_all_btn = QPushButton("Все остатки")
-        self.view_cat_btn = QPushButton("По категориям")
-        self.view_all_btn.setCheckable(True)
-        self.view_cat_btn.setCheckable(True)
-        self.view_all_btn.setChecked(True)
-        self.view_all_btn.clicked.connect(self._on_view_all)
-        self.view_cat_btn.clicked.connect(self._on_view_cat)
-        search_layout.addWidget(self.view_all_btn)
-        search_layout.addWidget(self.view_cat_btn)
-
         search_layout.addStretch()
         self.export_stock_excel_btn = QPushButton()
         self.export_stock_excel_btn.setObjectName("ExportBtn")
@@ -2000,20 +1995,6 @@ class StockTab(QWidget):
         self.export_stock_pdf_btn.clicked.connect(self.on_export_stock_pdf)
 
         layout.addWidget(self.tree)
-
-    def _on_view_all(self):
-        self._group_by_category = False
-        self.view_all_btn.setChecked(True)
-        self.view_cat_btn.setChecked(False)
-        self.reload()
-        self._apply_filter()
-
-    def _on_view_cat(self):
-        self._group_by_category = True
-        self.view_cat_btn.setChecked(True)
-        self.view_all_btn.setChecked(False)
-        self.reload()
-        self._apply_filter()
 
     def on_export_stock_excel(self):
         path, _ = QFileDialog.getSaveFileName(self, "Экспорт остатков", "", "Excel (*.xlsx)")
@@ -2108,63 +2089,17 @@ class StockTab(QWidget):
     def reload(self):
         self.tree.clear()
         base_rows = self.db.get_stock_view()
-
-        if self._group_by_category:
-            # Группируем по категории
-            from collections import OrderedDict
-            cat_map: dict = OrderedDict()
-            for row in base_rows:
-                cat = row["category_name"]
-                cat_map.setdefault(cat, []).append(row)
-
-            for cat_name, rows in cat_map.items():
-                cat_node = QTreeWidgetItem(self.tree)
-                cat_node.setText(0, "")
-                cat_node.setText(1, cat_name.upper())
-                cat_node.setText(2, "")
-                cat_node.setText(3, "")
-                cat_node.setText(4, "")
-                cat_node.setFlags(cat_node.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                font = cat_node.font(1)
-                font.setBold(True)
-                font.setPointSize(10)
-                cat_node.setFont(1, font)
-                for col in range(5):
-                    cat_node.setBackground(col, QColor("#F4F5F7"))
-                    cat_node.setForeground(col, QColor("#6B778C"))
-
-                for row in rows:
-                    self._make_item_node(cat_node, row)
-
-                cat_node.setExpanded(True)
-                cat_node.setText(3, str(cat_node.childCount()) + " поз.")
-        else:
-            for row in base_rows:
-                self._make_item_node(None, row)
+        for row in base_rows:
+            self._make_item_node(None, row)
 
     def _apply_filter(self):
         """Показать/скрыть узлы дерева по тексту поиска без пересборки."""
         text = self.search_edit.text().strip().lower()
-
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
             top = root.child(i)
-            is_category = top.data(0, Qt.ItemDataRole.UserRole) is None
-
-            if is_category:
-                # Режим "по категориям": проверяем дочерние элементы
-                any_visible = False
-                for j in range(top.childCount()):
-                    child = top.child(j)
-                    visible = self._item_matches(child, text)
-                    child.setHidden(not visible)
-                    if visible:
-                        any_visible = True
-                top.setHidden(not any_visible)
-            else:
-                # Плоский режим: проверяем сам узел
-                visible = self._item_matches(top, text)
-                top.setHidden(not visible)
+            visible = self._item_matches(top, text)
+            top.setHidden(not visible)
 
     def _item_matches(self, item: QTreeWidgetItem, text: str) -> bool:
         """Проверить, соответствует ли узел (или его дети) строке поиска."""
@@ -2353,8 +2288,15 @@ class MainWindow(QMainWindow):
         if base_icon.isNull():
             return base_icon
 
+        dpr = _device_pixel_ratio()
+        w_icon, h_icon = 20, 20
+        w_ctn, h_ctn = 20, 20
+        size_icon = QSize(int(round(w_icon * dpr)), int(round(h_icon * dpr)))
+        size_ctn = QSize(int(round(w_ctn * dpr)), int(round(h_ctn * dpr)))
+
         def colorize(pixmap: QPixmap, hex_color: str) -> QPixmap:
             result = QPixmap(pixmap.size())
+            result.setDevicePixelRatio(pixmap.devicePixelRatio())
             result.fill(QColor(0, 0, 0, 0))
             painter = QPainter(result)
             painter.drawPixmap(0, 0, pixmap)
@@ -2363,12 +2305,15 @@ class MainWindow(QMainWindow):
             painter.end()
             return result
 
-        raw = base_icon.pixmap(QSize(20, 20))
-        # Справа +4px зазор между иконкой и текстом (контейнер 24×20)
-        container = QPixmap(24, 20)
+        raw = base_icon.pixmap(size_icon)
+        if not raw.isNull():
+            raw.setDevicePixelRatio(dpr)
+        # Справа +4px зазор между иконкой и текстом (контейнер 24×20); иконка сдвинута на 1px вниз
+        container = QPixmap(size_ctn)
+        container.setDevicePixelRatio(dpr)
         container.fill(QColor(0, 0, 0, 0))
         p = QPainter(container)
-        p.drawPixmap(0, 0, raw)
+        p.drawPixmap(0, int(round(2 * dpr)), raw)
         p.end()
         src = container
 
@@ -2412,12 +2357,16 @@ class MainWindow(QMainWindow):
 
         logo_badge = QLabel("WH")
         logo_badge.setObjectName("LogoBadge")
-        logo_badge.setFixedSize(36, 36)
+        logo_badge.setFixedSize(44, 44)
         logo_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_path = _logo_path()
         if logo_path:
             logo_badge.setText("")
-            logo_badge.setPixmap(QIcon(logo_path).pixmap(QSize(36, 36)))
+            _dpr = _device_pixel_ratio()
+            _logo_size = int(round(44 * _dpr))
+            _logo_pix = QIcon(logo_path).pixmap(QSize(_logo_size, _logo_size))
+            _logo_pix.setDevicePixelRatio(_dpr)
+            logo_badge.setPixmap(_logo_pix)
 
         app_name = QLabel("Склад · ЛТО")
         app_name.setObjectName("AppName")
@@ -2459,7 +2408,7 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(lbl_ops)
 
         self._operations_expanded = True
-        self.btn_operations_parent = _NavBtn("Операции  ▼", "NavParent")
+        self.btn_operations_parent = _NavBtn("Операции", "NavParent")
         self.btn_operations_parent.setIcon(self._nav_icon("ph-arrows-left-right-light"))
         self.btn_operations_parent.setFixedHeight(44)
         self.btn_operations_parent.setCheckable(False)   # только разворачивает меню
@@ -2604,27 +2553,21 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # ── Загрузка шрифта Open Sans ────────────────────────────────────────────
-    _font_family = "Open Sans"
+    # ── Шрифт Inter ───────────────────────────────────────────────────────────
+    _font_family = "Inter"
     _fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
     _font_files = [
-        "OpenSans-Regular.ttf",
-        "OpenSans-SemiBold.ttf",
-        "OpenSans-Bold.ttf",
-        "OpenSans-Italic.ttf",
+        "Inter-Regular.ttf",
+        "Inter-Medium.ttf",
+        "Inter-SemiBold.ttf",
+        "Inter-Bold.ttf",
     ]
-    _loaded = False
     for _fname in _font_files:
         _fpath = os.path.join(_fonts_dir, _fname)
         if os.path.exists(_fpath):
             QFontDatabase.addApplicationFont(_fpath)
-            _loaded = True
-
-    if _loaded:
-        _base_font = QFont("Open Sans", 10)
-        app.setFont(_base_font)
-    else:
-        _font_family = '-apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    _base_font = QFont(_font_family, 10)
+    app.setFont(_base_font)
 
     # ── Стили приложения (Atlassian Design System) ───────────────────────────
     _qss_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles.qss")

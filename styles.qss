@@ -1,7 +1,7 @@
 /* ─ BASE ─────────────────────────────────────────────────────────── */
 QWidget {
     background-color: #F4F5F7;
-    font-family: "Open Sans", -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-family: "Inter", -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
     font-size: 13px;
     color: #172B4D;
 }
@@ -51,7 +51,7 @@ QPushButton#NavButton,
 QPushButton#NavParent {
     background: transparent;
     border: none;
-    border-radius: 3px;
+    border-radius: 8px;
     color: #DEEBFF;
     font-size: 14px;
     font-weight: 400;
@@ -61,17 +61,17 @@ QPushButton#NavParent {
 }
 
 QPushButton#NavParent {
-    font-weight: 600;
+    font-weight: 400;
 }
 
 QPushButton#NavChild {
     background: transparent;
     border: none;
-    border-radius: 3px;
+    border-radius: 8px;
     color: #B3D4FF;
-    font-size: 12px;
+    font-size: 14px;
     text-align: left;
-    padding-left: 36px;
+    padding-left: 40px;
     padding-right: 12px;
 }
 
@@ -87,7 +87,7 @@ QPushButton#NavParent:checked,
 QPushButton#NavChild:checked {
     background: #0052CC;
     color: #FFFFFF;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 QFrame#SidebarFooterFrame {
@@ -136,7 +136,7 @@ QSpinBox,
 QDateEdit {
     background-color: #FFFFFF;
     border: 2px solid #DFE1E6;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0px 8px;
     color: #172B4D;
     min-height: 32px;
@@ -214,7 +214,7 @@ QPushButton {
     background-color: #0052CC;
     color: #FFFFFF;
     border: none;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0px 12px;
     min-height: 32px;
     max-height: 32px;
@@ -245,7 +245,7 @@ QPushButton#DangerBtn {
     background-color: transparent;
     color: #DE350B;
     border: 1.5px solid #DE350B;
-    border-radius: 3px;
+    border-radius: 8px;
 }
 
 QPushButton#DangerBtn:hover {
@@ -259,7 +259,7 @@ QPushButton#DangerBtn:pressed {
 QPushButton#ExportBtn {
     background-color: transparent;
     border: 1px solid #B3BAC5;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0px;
 }
 
