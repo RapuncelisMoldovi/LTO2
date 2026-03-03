@@ -15,7 +15,7 @@ from database import (
     _register_pdf_font,
 )
 
-from PyQt6.QtCore import Qt, QSize, QDate, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QSize, QDate, pyqtSignal, QTimer, QSettings
 from PyQt6.QtGui import QIcon, QFontDatabase, QFont, QPixmap, QPainter, QColor, QIntValidator
 from PyQt6.QtWidgets import (
     QApplication,
@@ -106,6 +106,7 @@ class QuantitySpinBox(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("QuantitySpinBox")
         self._value = 1
         self._min_val = 1
         self._max_val = 1_000_000
@@ -116,13 +117,6 @@ class QuantitySpinBox(QWidget):
         self._minus_btn = QPushButton("−")
         self._minus_btn.setFixedSize(36, 32)
         self._minus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._minus_btn.setStyleSheet(
-            "QPushButton { background:#0052CC; color:#FFFFFF; "
-            "font-size:18px; font-weight:bold; }"
-            "QPushButton:hover { background:#0747A6; }"
-            "QPushButton:pressed { background:#043584; }"
-            "QPushButton:disabled { background:#DFE1E6; color:#97A0AF; }"
-        )
         self._minus_btn.clicked.connect(self._on_minus)
 
         self._value_edit = QLineEdit()
@@ -131,23 +125,12 @@ class QuantitySpinBox(QWidget):
         self._value_edit.setFixedHeight(32)
         self._value_edit.setValidator(QIntValidator(1, 1_000_000))
         self._value_edit.setText("1")
-        self._value_edit.setStyleSheet(
-            "QLineEdit { background:#FFFFFF; color:#172B4D; border:none; "
-            "border-radius:8px; font-size:14px; padding:0 4px; outline:none; }"
-        )
         self._value_edit.returnPressed.connect(self._commit_edit)
         self._value_edit.editingFinished.connect(self._commit_edit)
 
         self._plus_btn = QPushButton("+")
         self._plus_btn.setFixedSize(36, 32)
         self._plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._plus_btn.setStyleSheet(
-            "QPushButton { background:#0052CC; color:#FFFFFF;"
-            "font-size:18px; font-weight:bold; }"
-            "QPushButton:hover { background:#0747A6; }"
-            "QPushButton:pressed { background:#043584; }"
-            "QPushButton:disabled { background:#DFE1E6; color:#97A0AF; }"
-        )
         self._plus_btn.clicked.connect(self._on_plus)
 
         layout.addWidget(self._minus_btn)
@@ -244,6 +227,30 @@ def _icon_from_file(base_name: str, size: int = 20) -> QIcon:
         pix = pix.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     pix.setDevicePixelRatio(dpr)
     return QIcon(pix)
+
+
+def _icon_from_file_light(base_name: str, size: int = 20) -> QIcon:
+    """Иконка из файла, перекрашенная в светлый цвет (#EEEEEE) для тёмной темы."""
+    path = _icon_path(base_name)
+    if not path:
+        return QIcon()
+    dpr = _device_pixel_ratio()
+    pix = QPixmap(path)
+    if pix.isNull():
+        return QIcon()
+    target = int(round(size * dpr))
+    if pix.width() != target or pix.height() != target:
+        pix = pix.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    pix.setDevicePixelRatio(dpr)
+    out = QPixmap(pix.size())
+    out.setDevicePixelRatio(dpr)
+    out.fill(QColor(0, 0, 0, 0))
+    p = QPainter(out)
+    p.drawPixmap(0, 0, pix)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    p.fillRect(out.rect(), QColor("#EEEEEE"))
+    p.end()
+    return QIcon(out)
 
 
 def _size_display(size_name: str | None) -> str:
@@ -368,7 +375,7 @@ class NewVariantDialog(QDialog):
         form.addRow("Н/Н (полный):", self.full_code_edit)
 
         hint = QLabel(f"Базовый Н/Н изделия: <b>{self.base_code}</b>")
-        hint.setStyleSheet("color: #6B778C; font-size: 11px;")
+        hint.setObjectName("VariantHint")
         form.addRow("", hint)
 
         layout.addLayout(form)
@@ -451,7 +458,14 @@ class NomenclatureTab(QWidget):
         self.edit_item_btn = QPushButton("Редактировать")
         self.delete_item_btn = QPushButton("Удалить")
         self.delete_item_btn.setObjectName("DangerBtn")
-        self.import_excel_btn = QPushButton("Загрузить из Excel…")
+        self.import_excel_btn = QPushButton()
+        self.import_excel_btn.setObjectName("ExportBtn")
+        self.import_excel_btn.setProperty("iconName", "microsoft-excel-logo-duotone")
+        self.import_excel_btn.setProperty("iconSizePx", 18)
+        self.import_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
+        self.import_excel_btn.setIconSize(QSize(18, 18))
+        self.import_excel_btn.setFixedSize(32, 32)
+        self.import_excel_btn.setToolTip("Загрузить из Excel")
         btn_row.addWidget(self.new_item_btn)
         btn_row.addWidget(self.edit_item_btn)
         btn_row.addWidget(self.delete_item_btn)
@@ -577,6 +591,7 @@ class NomenclatureTab(QWidget):
             name, base_code, uom, item_type = dlg.get_data()
             try:
                 new_id = self.db.add_item(name, base_code, uom, item_type)
+                self.db.add_variant(new_id, "Без размера", base_code, item_type)
             except sqlite3.IntegrityError as e:
                 if logger:
                     logger.warning("Add item failed: %s", e)
@@ -669,6 +684,7 @@ class OperationDetailDialog(QDialog):
 
     def __init__(self, op_data: dict, parent=None):
         super().__init__(parent)
+        self.setObjectName("OperationDetailDialog")
         op_type  = "ПРИХОД" if op_data["op_type"] == "IN" else "ВЫДАЧА"
         self.setWindowTitle(f"Документ № {op_data['doc_name']}")
         self.setMinimumWidth(640)
@@ -678,11 +694,9 @@ class OperationDetailDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(16)
 
-        # ── Шапка документа ──────────────────────────────────────────────────
+        # Шапка документа
         header_frame = QFrame()
-        header_frame.setStyleSheet(
-            "QFrame { background:#F4F5F7; border:1px solid #DFE1E6; border-radius:4px; }"
-        )
+        header_frame.setObjectName("OpDetailHeader")
         hf_layout = QGridLayout(header_frame)
         hf_layout.setContentsMargins(16, 12, 16, 12)
         hf_layout.setHorizontalSpacing(32)
@@ -690,12 +704,12 @@ class OperationDetailDialog(QDialog):
 
         def _lbl_key(text):
             l = QLabel(text)
-            l.setStyleSheet("color:#6B778C; font-size:11px; font-weight:600; background:transparent; border:none; outline:none;")
+            l.setObjectName("OpDetailKey")
             return l
 
         def _lbl_val(text):
             l = QLabel(text)
-            l.setStyleSheet("color:#172B4D; font-size:13px; background:transparent; border:none; outline:none;")
+            l.setObjectName("OpDetailVal")
             return l
 
         hf_layout.addWidget(_lbl_key("ДОКУМЕНТ"),       0, 0)
@@ -708,9 +722,8 @@ class OperationDetailDialog(QDialog):
         hf_layout.addWidget(_lbl_val(op_data["unit_name"] or "—"), 1, 3)
         layout.addWidget(header_frame)
 
-        # ── Таблица позиций ───────────────────────────────────────────────────
         pos_label = QLabel(f"Позиции ({len(op_data['rows'])}):")
-        pos_label.setStyleSheet("font-weight:600; font-size:13px; color:#172B4D;")
+        pos_label.setObjectName("OpDetailPosLabel")
         layout.addWidget(pos_label)
 
         table = QTableWidget(0, 4)
@@ -736,10 +749,10 @@ class OperationDetailDialog(QDialog):
 
         layout.addWidget(table, 1)
 
-        # ── Кнопка закрытия ──────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         close_btn = QPushButton("Закрыть")
+        close_btn.setObjectName("CloseBtn")
         close_btn.setFixedWidth(120)
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
@@ -767,7 +780,7 @@ class JournalTab(QWidget):
         main_layout.setSpacing(12)
 
         hint = QLabel("Двойной клик по строке — открыть документ операции")
-        hint.setStyleSheet("color:#6B778C; font-size:12px;")
+        hint.setObjectName("JournalHint")
         main_layout.addWidget(hint)
 
         filter_layout = QHBoxLayout()
@@ -796,12 +809,16 @@ class JournalTab(QWidget):
         filter_layout.addStretch()
         self.export_journal_excel_btn = QPushButton()
         self.export_journal_excel_btn.setObjectName("ExportBtn")
+        self.export_journal_excel_btn.setProperty("iconName", "microsoft-excel-logo-duotone")
+        self.export_journal_excel_btn.setProperty("iconSizePx", 18)
         self.export_journal_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
         self.export_journal_excel_btn.setIconSize(QSize(18, 18))
         self.export_journal_excel_btn.setFixedSize(32, 32)
         self.export_journal_excel_btn.setToolTip("Экспорт в Excel")
         self.export_journal_pdf_btn = QPushButton()
         self.export_journal_pdf_btn.setObjectName("ExportBtn")
+        self.export_journal_pdf_btn.setProperty("iconName", "file-pdf-duotone")
+        self.export_journal_pdf_btn.setProperty("iconSizePx", 18)
         self.export_journal_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone", 18))
         self.export_journal_pdf_btn.setIconSize(QSize(18, 18))
         self.export_journal_pdf_btn.setFixedSize(32, 32)
@@ -942,6 +959,7 @@ class BasketDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        self.setObjectName("BasketDialog")
         self._basket = basket
         self.db = db
         self._op_type = op_type
@@ -955,157 +973,31 @@ class BasketDialog(QDialog):
 
     def _build_ui(self):
         if self._op_type == "IN":
-            op_text        = "ПРИХОД"
-            badge_bg       = "#E3FCEF"
-            badge_fg       = "#006644"
-            badge_border   = "#ABF5D1"
-            post_btn_color = "#00875A"
-            post_btn_hover = "#006644"
+            op_text = "ПРИХОД"
         else:
-            op_text        = "ВЫДАЧА"
-            badge_bg       = "#FFF4E6"
-            badge_fg       = "#974F0C"
-            badge_border   = "#FFE380"
-            post_btn_color = "#FF8B00"
-            post_btn_hover = "#974F0C"
-
-        self.setStyleSheet(
-            f"""
-            QDialog {{
-                background: #FFFFFF;
-            }}
-            QLabel {{
-                background: transparent;
-                color: #172B4D;
-            }}
-            QLineEdit, QComboBox {{
-                background: #FFFFFF;
-                border: 2px solid #DFE1E6;
-                border-radius: 3px;
-                padding: 0 8px;
-                color: #172B4D;
-                min-height: 32px;
-                max-height: 32px;
-            }}
-            QLineEdit:focus, QComboBox:focus {{
-                border-color: #4C9AFF;
-            }}
-            QLineEdit:hover, QComboBox:hover {{
-                border-color: #B3BAC5;
-            }}
-            QComboBox::drop-down {{ border: none; padding-right: 8px; }}
-            QComboBox QAbstractItemView {{
-                background: #FFFFFF;
-                border: 1px solid #DFE1E6;
-                selection-background-color: #DEEBFF;
-                color: #172B4D;
-            }}
-            QTableWidget {{
-                background: #FFFFFF;
-                border: 1px solid #DFE1E6;
-                border-radius: 8px;
-                gridline-color: #F4F5F7;
-                outline: none;
-                color: #172B4D;
-            }}
-            QTableWidget::item {{
-                padding: 0 12px;
-                border-bottom: 1px solid #F4F5F7;
-                color: #172B4D;
-            }}
-            QTableWidget::item:selected {{
-                background: #DEEBFF;
-                color: #172B4D;
-            }}
-            QHeaderView::section {{
-                background: #F4F5F7;
-                border: none;
-                border-bottom: 2px solid #DFE1E6;
-                border-right: 1px solid #DFE1E6;
-                padding: 8px 12px;
-                font-weight: 600;
-                font-size: 11px;
-                color: #6B778C;
-            }}
-            QPushButton#PostBtn {{
-                background: {post_btn_color};
-                color: #FFFFFF;
-                border: none;
-                border-radius: 3px;
-                padding: 0 20px;
-                font-weight: 600;
-                min-height: 36px;
-                max-height: 36px;
-                font-size: 13px;
-            }}
-            QPushButton#PostBtn:hover {{ background: {post_btn_hover}; }}
-            QPushButton#PostBtn:disabled {{
-                background: #DFE1E6; color: #97A0AF;
-            }}
-            QPushButton#CloseBtn {{
-                background: transparent;
-                color: #42526E;
-                border: 1.5px solid #DFE1E6;
-                border-radius: 3px;
-                padding: 0 16px;
-                min-height: 36px;
-                max-height: 36px;
-                font-size: 13px;
-            }}
-            QPushButton#CloseBtn:hover {{
-                background: #F4F5F7;
-                border-color: #B3BAC5;
-            }}
-            QPushButton#ClearBtn {{
-                background: transparent;
-                color: #DE350B;
-                border: 1.5px solid #DE350B;
-                border-radius: 3px;
-                padding: 0 16px;
-                min-height: 36px;
-                max-height: 36px;
-                font-size: 13px;
-            }}
-            QPushButton#ClearBtn:hover {{ background: #FFEBE6; }}
-            QPushButton#ClearBtn:disabled {{ color: #DFE1E6; border-color: #DFE1E6; }}
-            """
-        )
+            op_text = "ВЫДАЧА"
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ──────────────────────────────────────────────────────────────
-        # 1. Цветная шапка
-        # ──────────────────────────────────────────────────────────────
         header_frame = QFrame()
+        header_frame.setObjectName("BasketHeaderIn" if self._op_type == "IN" else "BasketHeaderOut")
         header_frame.setFixedHeight(72)
-        header_frame.setStyleSheet(
-            f"QFrame {{ background: {badge_bg};"
-            f" border-bottom: 1px solid {badge_border}; }}"
-        )
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(24, 0, 24, 0)
         header_layout.setSpacing(14)
 
         badge = QLabel(op_text)
+        badge.setObjectName("BasketBadgeIn" if self._op_type == "IN" else "BasketBadgeOut")
         badge.setFixedHeight(26)
-        badge.setStyleSheet(
-            f"color: {badge_fg}; background: {badge_border};"
-            f" border-radius: 4px; padding: 0 10px;"
-            f" font-weight: 700; font-size: 11px;"
-        )
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         title_lbl = QLabel("Корзина операции")
-        title_lbl.setStyleSheet(
-            "font-size: 18px; font-weight: 700; color: #172B4D;"
-        )
+        title_lbl.setObjectName("BasketTitleLbl")
 
         self.count_lbl = QLabel("")
-        self.count_lbl.setStyleSheet(
-            "font-size: 13px; color: #6B778C;"
-        )
+        self.count_lbl.setObjectName("BasketCountLbl")
 
         header_layout.addWidget(badge)
         header_layout.addWidget(title_lbl)
@@ -1113,11 +1005,8 @@ class BasketDialog(QDialog):
         header_layout.addStretch()
         root.addWidget(header_frame)
 
-        # ──────────────────────────────────────────────────────────────
-        # 2. Основной контент (таблица / empty state)
-        # ──────────────────────────────────────────────────────────────
         content = QWidget()
-        content.setStyleSheet("QWidget { background: #FFFFFF; }")
+        content.setObjectName("BasketContent")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(24, 20, 24, 16)
         content_layout.setSpacing(16)
@@ -1141,26 +1030,22 @@ class BasketDialog(QDialog):
 
         # Empty state
         self.empty_widget = QFrame()
-        self.empty_widget.setStyleSheet(
-            "QFrame { background: #F4F5F7; border: 1px dashed #B3BAC5; border-radius: 6px; }"
-        )
+        self.empty_widget.setObjectName("BasketEmptyFrame")
         empty_layout = QVBoxLayout(self.empty_widget)
         empty_layout.setContentsMargins(0, 40, 0, 40)
         empty_lbl = QLabel("Корзина пуста")
+        empty_lbl.setObjectName("BasketEmptyLbl")
         empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_lbl.setStyleSheet("font-size: 15px; color: #97A0AF; font-weight: 600; border: none;")
         sub_lbl = QLabel("Добавьте товары из поиска")
+        sub_lbl.setObjectName("BasketEmptySubLbl")
         sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub_lbl.setStyleSheet("font-size: 12px; color: #B3BAC5; border: none;")
         empty_layout.addWidget(empty_lbl)
         empty_layout.addWidget(sub_lbl)
         content_layout.addWidget(self.empty_widget)
 
         # Форма: документ + подразделение
         form_frame = QFrame()
-        form_frame.setStyleSheet(
-            "QFrame { background: #F4F5F7; border: 1px solid #DFE1E6; border-radius: 4px; }"
-        )
+        form_frame.setObjectName("BasketFormFrame")
         form_frame.setFixedHeight(78)
         form_layout = QHBoxLayout(form_frame)
         form_layout.setContentsMargins(16, 10, 16, 10)
@@ -1171,7 +1056,7 @@ class BasketDialog(QDialog):
         doc_col.setSpacing(4)
         doc_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         doc_lbl = QLabel("Документ *")
-        doc_lbl.setStyleSheet("font-size: 11px; font-weight: 700; color: #6B778C; border: none;")
+        doc_lbl.setObjectName("BasketFormLbl")
         self.doc_edit = QLineEdit()
         self.doc_edit.setPlaceholderText("Введите № учётного документа")
         doc_col.addWidget(doc_lbl)
@@ -1182,7 +1067,7 @@ class BasketDialog(QDialog):
         unit_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         unit_lbl_text = "От подразделения *" if self._op_type == "IN" else "В подразделение *"
         unit_lbl = QLabel(unit_lbl_text)
-        unit_lbl.setStyleSheet("font-size: 11px; font-weight: 700; color: #6B778C; border: none;")
+        unit_lbl.setObjectName("BasketFormLbl")
         self.unit_combo = QComboBox()
         self.unit_combo.setEditable(False)
         self.unit_combo.setMinimumWidth(200)
@@ -1197,14 +1082,10 @@ class BasketDialog(QDialog):
 
         root.addWidget(content, 1)
 
-        # ──────────────────────────────────────────────────────────────
         # 3. Нижняя панель с кнопками
-        # ──────────────────────────────────────────────────────────────
         footer_frame = QFrame()
+        footer_frame.setObjectName("BasketFooterFrame")
         footer_frame.setFixedHeight(64)
-        footer_frame.setStyleSheet(
-            "QFrame { background: #F4F5F7; border-top: 1px solid #DFE1E6; }"
-        )
         footer_layout = QHBoxLayout(footer_frame)
         footer_layout.setContentsMargins(24, 0, 24, 0)
         footer_layout.setSpacing(10)
@@ -1212,7 +1093,7 @@ class BasketDialog(QDialog):
         self.clear_btn = QPushButton("Очистить")
         self.clear_btn.setObjectName("ClearBtn")
         self.post_btn = QPushButton("Провести операцию →")
-        self.post_btn.setObjectName("PostBtn")
+        self.post_btn.setObjectName("PostBtnIn" if self._op_type == "IN" else "PostBtnOut")
         close_btn = QPushButton("Отмена")
         close_btn.setObjectName("CloseBtn")
 
@@ -1248,15 +1129,10 @@ class BasketDialog(QDialog):
             qty_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(i, 3, qty_item)
             del_btn = QPushButton("✕")
+            del_btn.setObjectName("DelItemBtn")
             del_btn.setFixedSize(28, 28)
-            del_btn.setStyleSheet(
-                "QPushButton { background: transparent; color: #97A0AF; border: 1px solid #DFE1E6;"
-                " border-radius: 14px; font-size: 12px; padding: 0; }"
-                "QPushButton:hover { background: #FF5630; color: #FFFFFF; border-color: #FF5630; }"
-            )
             del_btn.clicked.connect(lambda _, idx=i: self._remove_item(idx))
             container = QWidget()
-            container.setStyleSheet("QWidget { background: transparent; }")
             c_layout = QHBoxLayout(container)
             c_layout.setContentsMargins(0, 0, 0, 0)
             c_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1412,6 +1288,7 @@ class OperationsTab(QWidget):
         self.results_table.setColumnWidth(2, 120)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.results_table.verticalHeader().setVisible(False)
         self.results_table.setSortingEnabled(True)
         self._results_sort_column = 0
         self._results_sort_order = Qt.SortOrder.AscendingOrder
@@ -1447,7 +1324,7 @@ class OperationsTab(QWidget):
         self.qty_spin.setValue(1)
         self.qty_spin.setFixedWidth(120)
         qty_pair = QWidget()
-        qty_pair.setStyleSheet("QWidget { background: transparent; }")
+        qty_pair.setObjectName("QtyPair")
         qty_pair_layout = QHBoxLayout(qty_pair)
         qty_pair_layout.setContentsMargins(0, 0, 0, 0)
         qty_pair_layout.setSpacing(6)
@@ -1460,14 +1337,9 @@ class OperationsTab(QWidget):
         self._sn_available = []
         self._sn_selected = []
         self.sn_dropdown_btn = QPushButton("Выбрать заводские номера")
+        self.sn_dropdown_btn.setObjectName("SnDropdownBtn")
         self.sn_dropdown_btn.setMinimumWidth(220)
         self.sn_dropdown_btn.setMaximumHeight(32)
-        self.sn_dropdown_btn.setStyleSheet(
-            "QPushButton { text-align: center; padding: 2px 10px; color: #000000; "
-            "border: 1px solid #B3BAC5; border-radius: 3px; background: #FFFFFF; "
-            "min-height: 0; max-height: 32px; }"
-            "QPushButton:hover { border-color: #97A0AF; background: #F4F5F7; }"
-        )
         self.sn_dropdown_btn.clicked.connect(self._on_sn_dropdown_clicked)
         self.add_btn = QPushButton("+ Добавить в корзину")
         self.add_btn.setEnabled(False)
@@ -1483,11 +1355,7 @@ class OperationsTab(QWidget):
         add_layout.addLayout(qty_sn_row)
         root.addWidget(add_panel)
 
-        # Стили
-        add_panel.setStyleSheet(
-            "QFrame#AddPanel { background:#FFFFFF; border:1px solid #DFE1E6; border-radius:3px; }"
-        )
-        self.selected_label.setStyleSheet("color:#6B778C; font-size:12px; background:transparent;")
+        self.selected_label.setObjectName("SelectedLabel")
 
         # Сигналы
         self.search_btn.clicked.connect(self.on_search)
@@ -1600,18 +1468,9 @@ class OperationsTab(QWidget):
     def _update_basket_btn(self):
         n = len(self._basket)
         self.basket_btn.setText(f"Корзина ({n})")
-        if n > 0:
-            self.basket_btn.setStyleSheet(
-                "QPushButton#BasketBtn { background:#0052CC; color:#FFFFFF;"
-                " border:none; border-radius:8px; font-weight:600; }"
-                "QPushButton#BasketBtn:hover { background:#0747A6; }"
-            )
-        else:
-            self.basket_btn.setStyleSheet(
-                "QPushButton#BasketBtn { background:transparent; color:#6B778C;"
-                " border:1px solid #B3BAC5; border-radius:8px; font-weight:400; }"
-                "QPushButton#BasketBtn:hover { background:#F4F5F7; }"
-            )
+        self.basket_btn.setProperty("hasItems", "true" if n > 0 else "false")
+        self.basket_btn.style().unpolish(self.basket_btn)
+        self.basket_btn.style().polish(self.basket_btn)
 
     def _open_basket(self):
         op_type = "IN" if self.in_radio.isChecked() else "OUT"
@@ -1904,12 +1763,16 @@ class StockTab(QWidget):
         search_layout.addStretch()
         self.export_stock_excel_btn = QPushButton()
         self.export_stock_excel_btn.setObjectName("ExportBtn")
+        self.export_stock_excel_btn.setProperty("iconName", "microsoft-excel-logo-duotone")
+        self.export_stock_excel_btn.setProperty("iconSizePx", 18)
         self.export_stock_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
         self.export_stock_excel_btn.setIconSize(QSize(18, 18))
         self.export_stock_excel_btn.setFixedSize(32, 32)
         self.export_stock_excel_btn.setToolTip("Экспорт в Excel")
         self.export_stock_pdf_btn = QPushButton()
         self.export_stock_pdf_btn.setObjectName("ExportBtn")
+        self.export_stock_pdf_btn.setProperty("iconName", "file-pdf-duotone")
+        self.export_stock_pdf_btn.setProperty("iconSizePx", 18)
         self.export_stock_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone", 18))
         self.export_stock_pdf_btn.setIconSize(QSize(18, 18))
         self.export_stock_pdf_btn.setFixedSize(32, 32)
@@ -2206,9 +2069,25 @@ class _NavBtn(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
+THEME_SETTINGS_KEY = "theme"  # "light" | "dark"
+
+
+def _load_stylesheet(theme: str) -> str:
+    """Загружает QSS для темы light или dark."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    filename = "styles_dark.qss" if theme == "dark" else "styles.qss"
+    path = os.path.join(base_dir, filename)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, app: QApplication):
         super().__init__()
+        self._app = app
+        self._theme = QSettings("LTO2", "App").value(THEME_SETTINGS_KEY, "light", type=str)
         # region agent log
         _agent_debug_log(
             hypothesis_id="H2",
@@ -2234,6 +2113,31 @@ class MainWindow(QMainWindow):
         self.db = DatabaseManager(db_path)
 
         self._build_ui()
+        self._apply_export_icons()
+
+    def _apply_export_icons(self):
+        """Выставляет иконки экспорта: светлые в тёмной теме, обычные в светлой."""
+        is_dark = self._theme == "dark"
+        for btn in self.findChildren(QPushButton):
+            if btn.objectName() != "ExportBtn":
+                continue
+            name = btn.property("iconName")
+            size = btn.property("iconSizePx") or 18
+            if not name:
+                continue
+            try:
+                size = int(size) if not isinstance(size, int) else size
+            except (TypeError, ValueError):
+                size = 18
+            icon = _icon_from_file_light(name, size) if is_dark else _icon_from_file(name, size)
+            btn.setIcon(icon)
+
+    def _apply_nav_icons(self):
+        """Обновляет иконки кнопок сайдбара под текущую тему (светлая — тёмные иконки)."""
+        self.btn_stock.setIcon(self._nav_icon("ph-warehouse-light"))
+        self.btn_operations_parent.setIcon(self._nav_icon("ph-arrows-left-right-light"))
+        self.btn_nomenclature.setIcon(self._nav_icon("ph-squares-four-light"))
+        self.btn_units.setIcon(self._nav_icon("ph-buildings-light"))
 
     def _load_icon(self, base_name: str) -> QIcon:
         """Загружает иконку PNG из папки icons/. base_name — без расширения."""
@@ -2243,11 +2147,9 @@ class MainWindow(QMainWindow):
         return QIcon()
 
     def _nav_icon(self, filename: str) -> QIcon:
-        """Загружает иконку и возвращает двухрежимный QIcon:
-        - Normal  → цвет подписи неактивного пункта (#DEEBFF)
-        - Active/Selected → цвет активного пункта (#FFFFFF)
-        Зазор между иконкой и текстом задаётся шириной контейнера (padding в QSS
-        не подходит: у QPushButton нет subcontrol для иконки, padding сдвигает весь блок).
+        """Загружает иконку и возвращает двухрежимный QIcon.
+        Светлая тема: неактивный #6B778C, активный #0052CC.
+        Тёмная тема: неактивный #DEEBFF, активный #FFFFFF.
         """
         base_icon = self._load_icon(filename)
         if base_icon.isNull():
@@ -2273,7 +2175,6 @@ class MainWindow(QMainWindow):
         raw = base_icon.pixmap(size_icon)
         if not raw.isNull():
             raw.setDevicePixelRatio(dpr)
-        # Справа +4px зазор между иконкой и текстом (контейнер 24×20); иконка сдвинута на 1px вниз
         container = QPixmap(size_ctn)
         container.setDevicePixelRatio(dpr)
         container.fill(QColor(0, 0, 0, 0))
@@ -2282,11 +2183,18 @@ class MainWindow(QMainWindow):
         p.end()
         src = container
 
+        if self._theme == "light":
+            color_normal = "#6B778C"
+            color_active = "#0052CC"
+        else:
+            color_normal = "#DEEBFF"
+            color_active = "#FFFFFF"
+
         icon = QIcon()
-        icon.addPixmap(colorize(src, "#DEEBFF"), QIcon.Mode.Normal,   QIcon.State.Off)
-        icon.addPixmap(colorize(src, "#FFFFFF"), QIcon.Mode.Active,   QIcon.State.Off)
-        icon.addPixmap(colorize(src, "#FFFFFF"), QIcon.Mode.Selected, QIcon.State.Off)
-        icon.addPixmap(colorize(src, "#FFFFFF"), QIcon.Mode.Normal,   QIcon.State.On)
+        icon.addPixmap(colorize(src, color_normal), QIcon.Mode.Normal,   QIcon.State.Off)
+        icon.addPixmap(colorize(src, color_active), QIcon.Mode.Active,   QIcon.State.Off)
+        icon.addPixmap(colorize(src, color_active), QIcon.Mode.Selected, QIcon.State.Off)
+        icon.addPixmap(colorize(src, color_active), QIcon.Mode.Normal,   QIcon.State.On)
         return icon
 
     def _build_ui(self):
@@ -2404,6 +2312,16 @@ class MainWindow(QMainWindow):
         self.btn_units.setFixedHeight(44)
         nav_layout.addWidget(self.btn_units)
 
+        nav_layout.addSpacing(8)
+        # Переключатель темы
+        self.btn_theme = QPushButton()
+        self.btn_theme.setObjectName("ThemeToggleBtn")
+        self.btn_theme.setFixedHeight(44)
+        self.btn_theme.setCheckable(False)
+        self._update_theme_button()
+        self.btn_theme.clicked.connect(self._toggle_theme)
+        nav_layout.addWidget(self.btn_theme)
+
         nav_layout.addStretch()
         sidebar_layout.addWidget(nav_scroll, 1)
 
@@ -2513,6 +2431,27 @@ class MainWindow(QMainWindow):
         if index == 3:
             self.nomenclature_tab.reload()
 
+    def _update_theme_button(self):
+        """Обновляет текст и иконку кнопки переключения темы."""
+        if self._theme == "dark":
+            self.btn_theme.setText("Светлая")
+            icon = self._nav_icon("ph-sun-dim") or self._nav_icon("ph-sun")
+        else:
+            self.btn_theme.setText("Тёмная")
+            icon = self._nav_icon("ph-moon") or self._nav_icon("ph-moon-stars")
+        self.btn_theme.setIcon(icon if not icon.isNull() else QIcon())
+
+    def _toggle_theme(self):
+        """Переключает тему и сохраняет выбор."""
+        self._theme = "dark" if self._theme == "light" else "light"
+        QSettings("LTO2", "App").setValue(THEME_SETTINGS_KEY, self._theme)
+        qss = _load_stylesheet(self._theme)
+        if qss:
+            self._app.setStyleSheet(qss)
+        self._update_theme_button()
+        self._apply_export_icons()
+        self._apply_nav_icons()
+
 
 def main():
     global logger
@@ -2537,12 +2476,14 @@ def main():
     _base_font = QFont(_font_family, 10)
     app.setFont(_base_font)
 
-    # ── Стили приложения (Atlassian Design System) ───────────────────────────
-    _qss_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles.qss")
-    with open(_qss_path, "r", encoding="utf-8") as _f:
-        app.setStyleSheet(_f.read())
+    # ── Стили приложения ─────────────────────────────────────────────────────
+    _theme = QSettings("LTO2", "App").value(THEME_SETTINGS_KEY, "light", type=str)
+    _qss = _load_stylesheet(_theme)
+    if _qss:
+        app.setStyle("Fusion")  # чтобы QSS для QDateEdit::down-button применялся без нативной рамки
+        app.setStyleSheet(_qss)
 
-    window = MainWindow()
+    window = MainWindow(app)
     # region agent log
     _agent_debug_log(
         hypothesis_id="H2",
