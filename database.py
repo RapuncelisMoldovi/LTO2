@@ -56,18 +56,6 @@ class DatabaseManager:
             """
         )
 
-        # Категории имущества
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL
-            )
-            """
-        )
-        for cat in ("ЛТО", "ПДИ", "Высотное снаряжение", "Чехлы и палатки"):
-            cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (cat,))
-
         # Изделия
         cur.execute(
             """
@@ -144,15 +132,28 @@ class DatabaseManager:
             """
         )
 
-        # Подразделения по умолчанию — только при самом первом запуске (пустая БД: нет ни units, ни items).
-        # Если пользователь удалил все подразделения — не восстанавливаем их при перезапуске.
+        # Подразделения по умолчанию — только при самом первом запуске (новая БД: нет ни units, ни items).
+        # Флаг _init_flags не даёт восстанавливать их после того, как пользователь удалил подразделения.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS _init_flags (
+                name TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            )
+            """
+        )
         cur.execute("SELECT COUNT(*) FROM units")
         units_count = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM items")
         items_count = cur.fetchone()[0]
-        if units_count == 0 and items_count == 0:
+        cur.execute("SELECT value FROM _init_flags WHERE name = 'default_units_added'")
+        default_units_done = cur.fetchone() is not None
+        if units_count == 0 and items_count == 0 and not default_units_done:
             cur.execute("INSERT INTO units(name) VALUES (?)", ("Склад-основной",))
             cur.execute("INSERT INTO units(name) VALUES (?)", ("Цех-1",))
+            cur.execute(
+                "INSERT OR REPLACE INTO _init_flags (name, value) VALUES ('default_units_added', 1)"
+            )
 
         self.conn.commit()
 
@@ -163,12 +164,9 @@ class DatabaseManager:
             cur.execute("ALTER TABLE journal ADD COLUMN doc_name TEXT")
             self.conn.commit()
 
-        # Миграция: добавляем поле category_id в items, если его нет (старые БД)
-        cur.execute("PRAGMA table_info(items)")
-        item_cols = [r[1] for r in cur.fetchall()]
-        if "category_id" not in item_cols:
-            cur.execute("ALTER TABLE items ADD COLUMN category_id INTEGER REFERENCES categories(id)")
-            self.conn.commit()
+        # Миграция: удаляем таблицу категорий (функционал категорий убран)
+        cur.execute("DROP TABLE IF EXISTS categories")
+        self.conn.commit()
 
         # region agent log
         _agent_debug_log(
@@ -180,29 +178,22 @@ class DatabaseManager:
 
     # --- Items & Variants ---
 
-    def get_categories(self):
-        cur = self.conn.cursor()
-        cur.execute("SELECT id, name FROM categories ORDER BY id")
-        return cur.fetchall()
-
     def get_items(self):
         cur = self.conn.cursor()
         cur.execute(
             """
-            SELECT i.id, i.name, i.base_code, i.uom, i.type,
-                   COALESCE(c.name, '—') AS category_name, i.category_id
+            SELECT i.id, i.name, i.base_code, i.uom, i.type
             FROM items i
-            LEFT JOIN categories c ON c.id = i.category_id
-            ORDER BY c.name COLLATE NOCASE, i.name COLLATE NOCASE
+            ORDER BY i.name COLLATE NOCASE
             """
         )
         return cur.fetchall()
 
-    def add_item(self, name: str, base_code: str, uom: str, item_type: str, category_id: int | None = None):
+    def add_item(self, name: str, base_code: str, uom: str, item_type: str):
         cur = self.conn.cursor()
         cur.execute(
-            "INSERT INTO items(name, base_code, uom, type, category_id) VALUES (?, ?, ?, ?, ?)",
-            (name.strip(), base_code.strip(), uom.strip(), item_type, category_id),
+            "INSERT INTO items(name, base_code, uom, type) VALUES (?, ?, ?, ?)",
+            (name.strip(), base_code.strip(), uom.strip(), item_type),
         )
         iid = cur.lastrowid
         self.conn.commit()
@@ -249,7 +240,6 @@ class DatabaseManager:
     def import_nomenclature_from_excel(
         self,
         file_path: str,
-        category_id: int | None = None,
         *,
         skip_header_row: bool = True,
     ) -> tuple[int, int, list[str]]:
@@ -335,7 +325,7 @@ class DatabaseManager:
             item_type = _excel_type_to_item_type(base_row[4] if len(base_row) > 4 else None)
 
             try:
-                item_id = self.add_item(name, base_code, uom, item_type, category_id)
+                item_id = self.add_item(name, base_code, uom, item_type)
                 items_added += 1
             except sqlite3.IntegrityError as e:
                 errors.append(f"«{name}»: не удалось добавить изделие — {e}")
@@ -359,11 +349,11 @@ class DatabaseManager:
 
         return items_added, variants_added, errors
 
-    def update_item(self, item_id: int, name: str, base_code: str, uom: str, item_type: str, category_id: int | None = None):
+    def update_item(self, item_id: int, name: str, base_code: str, uom: str, item_type: str):
         cur = self.conn.cursor()
         cur.execute(
-            "UPDATE items SET name = ?, base_code = ?, uom = ?, type = ?, category_id = ? WHERE id = ?",
-            (name.strip(), base_code.strip(), uom.strip(), item_type, category_id, item_id),
+            "UPDATE items SET name = ?, base_code = ?, uom = ?, type = ? WHERE id = ?",
+            (name.strip(), base_code.strip(), uom.strip(), item_type, item_id),
         )
         self.conn.commit()
         self._audit("ITEM_UPDATE", "items", item_id, f"name={name.strip()} base_code={base_code.strip()}")
@@ -472,14 +462,12 @@ class DatabaseManager:
                 i.name AS item_name,
                 i.type AS item_type,
                 i.uom AS uom,
-                COALESCE(c.name, '—') AS category_name,
                 CASE
                     WHEN i.type = 'qty' THEN COALESCE(sq.quantity, 0)
                     ELSE (SELECT COUNT(*) FROM stock_serial ss WHERE ss.variant_id = v.id)
                 END AS stock_value
             FROM variants v
             JOIN items i ON v.item_id = i.id
-            LEFT JOIN categories c ON c.id = i.category_id
             LEFT JOIN stock_qty sq ON sq.variant_id = v.id
             WHERE v.full_code LIKE ? OR i.name LIKE ?
             ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
@@ -625,7 +613,6 @@ class DatabaseManager:
                 i.base_code,
                 i.type AS item_type,
                 i.uom AS uom,
-                COALESCE(c.name, '—') AS category_name,
                 COALESCE(
                     CASE
                         WHEN i.type = 'qty' THEN SUM(sq.quantity)
@@ -634,13 +621,12 @@ class DatabaseManager:
                     0
                 ) AS stock_value
             FROM items i
-            LEFT JOIN categories c ON c.id = i.category_id
             LEFT JOIN variants v ON v.item_id = i.id
             LEFT JOIN stock_qty sq ON sq.variant_id = v.id
             LEFT JOIN stock_serial ss ON ss.variant_id = v.id
-            GROUP BY i.id, i.name, i.base_code, i.type, i.uom, c.name
+            GROUP BY i.id, i.name, i.base_code, i.type, i.uom
             HAVING stock_value > 0
-            ORDER BY c.name COLLATE NOCASE, i.name COLLATE NOCASE
+            ORDER BY i.name COLLATE NOCASE
             """
         )
         return cur.fetchall()

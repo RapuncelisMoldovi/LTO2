@@ -1,7 +1,6 @@
 import sys
 import os
 import logging
-import shutil
 import sqlite3
 from datetime import datetime
 
@@ -53,8 +52,6 @@ from PyQt6.QtWidgets import (
 
 
 DB_NAME = "warehouse.db"
-BACKUP_DIR = "backups"
-MAX_BACKUPS = 10
 LOG_DIR = "logs"
 
 # --- Логирование (приоритет 1) ---
@@ -73,36 +70,6 @@ def _setup_logging():
 
 
 logger = None  # устанавливается в main() и передаётся в database.logger
-
-
-def _backup_db(db_path: str) -> None:
-    """Автоматическое резервное копирование БД при запуске (приоритет 1)."""
-    try:
-        base_dir = os.path.dirname(db_path)
-        backup_folder = os.path.join(base_dir, BACKUP_DIR)
-        os.makedirs(backup_folder, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        name = os.path.basename(db_path)
-        stem, ext = os.path.splitext(name)
-        backup_name = f"{stem}_{stamp}{ext}"
-        dest = os.path.join(backup_folder, backup_name)
-        shutil.copy2(db_path, dest)
-        if logger:
-            logger.info("Backup created: %s", dest)
-        # Оставляем только последние MAX_BACKUPS
-        files = sorted(
-            (f for f in os.listdir(backup_folder) if f.startswith(stem) and f.endswith(ext)),
-            key=lambda f: os.path.getmtime(os.path.join(backup_folder, f)),
-            reverse=True,
-        )
-        for f in files[MAX_BACKUPS:]:
-            try:
-                os.remove(os.path.join(backup_folder, f))
-            except OSError:
-                pass
-    except Exception as e:
-        if logger:
-            logger.exception("Backup failed: %s", e)
 
 
 def _patch_calendar_arrows(date_edit) -> None:
@@ -358,10 +325,10 @@ class NewItemDialog(QDialog):
         base_code = self.base_code_edit.text().strip()
         uom = self.uom_edit.text().strip()
         item_type = "qty" if self.qty_radio.isChecked() else "serial"
-        return name, base_code, uom, item_type, None
+        return name, base_code, uom, item_type
 
     def accept(self):
-        name, base_code, uom, _, _cat = self.get_data()
+        name, base_code, uom, _ = self.get_data()
         if not name or not uom:
             QMessageBox.warning(self, "Ошибка", "Заполните все поля.")
             return
@@ -607,9 +574,9 @@ class NomenclatureTab(QWidget):
     def on_new_item(self):
         dlg = NewItemDialog(self.db, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            name, base_code, uom, item_type, category_id = dlg.get_data()
+            name, base_code, uom, item_type = dlg.get_data()
             try:
-                new_id = self.db.add_item(name, base_code, uom, item_type, category_id)
+                new_id = self.db.add_item(name, base_code, uom, item_type)
             except sqlite3.IntegrityError as e:
                 if logger:
                     logger.warning("Add item failed: %s", e)
@@ -624,9 +591,9 @@ class NomenclatureTab(QWidget):
             return
         dlg = NewItemDialog(self.db, self, edit_item_id=item_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            name, base_code, uom, item_type, category_id = dlg.get_data()
+            name, base_code, uom, item_type = dlg.get_data()
             try:
-                self.db.update_item(item_id, name, base_code, uom, item_type, category_id)
+                self.db.update_item(item_id, name, base_code, uom, item_type)
             except sqlite3.IntegrityError as e:
                 if logger:
                     logger.warning("Update item failed: %s", e)
@@ -679,7 +646,7 @@ class NomenclatureTab(QWidget):
         )
         if not path:
             return
-        items_added, variants_added, errors = self.db.import_nomenclature_from_excel(path, category_id=None)
+        items_added, variants_added, errors = self.db.import_nomenclature_from_excel(path)
         if items_added == 0 and variants_added == 0 and not errors:
             QMessageBox.information(self, "Импорт", "В файле нет данных для импорта.")
             return
@@ -1435,14 +1402,13 @@ class OperationsTab(QWidget):
         search_row.addWidget(self.search_btn)
         root.addLayout(search_row)
 
-        self.results_table = QTableWidget(0, 5)
-        self.results_table.setHorizontalHeaderLabels(["Код", "Название", "Размер", "Категория", "Наличие"])
+        self.results_table = QTableWidget(0, 4)
+        self.results_table.setHorizontalHeaderLabels(["Код", "Название", "Размер", "Наличие"])
         hh = self.results_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.results_table.setColumnWidth(2, 120)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -1696,7 +1662,6 @@ class OperationsTab(QWidget):
             self.results_table.setItem(i, 0, QTableWidgetItem(row["full_code"] or ""))
             self.results_table.setItem(i, 1, QTableWidgetItem(row["item_name"] or ""))
             self.results_table.setItem(i, 2, QTableWidgetItem(_size_display(row["size_name"])))
-            self.results_table.setItem(i, 3, QTableWidgetItem(row["category_name"] or "—"))
 
             stock_val = row["stock_value"] or 0
             stock_item = QTableWidgetItem(str(stock_val))
@@ -1705,7 +1670,7 @@ class OperationsTab(QWidget):
                 stock_item.setForeground(QColor("#006644") if stock_val > 0 else QColor("#DE350B"))
             else:
                 stock_item.setForeground(QColor("#97A0AF"))
-            self.results_table.setItem(i, 4, stock_item)
+            self.results_table.setItem(i, 3, stock_item)
             self.results_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, row["variant_id"])
 
         self.results_table.setSortingEnabled(True)
@@ -1747,12 +1712,11 @@ class OperationsTab(QWidget):
             self.results_table.setItem(i, 0, QTableWidgetItem(row["full_code"] or ""))
             self.results_table.setItem(i, 1, QTableWidgetItem(row["item_name"] or ""))
             self.results_table.setItem(i, 2, QTableWidgetItem(_size_display(row["size_name"])))
-            self.results_table.setItem(i, 3, QTableWidgetItem(row["category_name"] or "—"))
             stock_val = row["stock_value"]
             stock_item = QTableWidgetItem(str(stock_val))
             stock_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             stock_item.setForeground(QColor("#006644") if stock_val > 0 else QColor("#DE350B"))
-            self.results_table.setItem(i, 4, stock_item)
+            self.results_table.setItem(i, 3, stock_item)
             self.results_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, row["variant_id"])
         self.results_table.setSortingEnabled(True)
         try:
@@ -2263,9 +2227,10 @@ class MainWindow(QMainWindow):
         self.resize(1200, 720)
         self.setMinimumSize(900, 580)
 
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), DB_NAME)
-        if os.path.exists(db_path):
-            _backup_db(db_path)
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(_script_dir, DB_NAME)
+        if logger:
+            logger.info("Using database: %s (exists: %s)", db_path, os.path.exists(db_path))
         self.db = DatabaseManager(db_path)
 
         self._build_ui()
@@ -2544,6 +2509,9 @@ class MainWindow(QMainWindow):
         for btn in (self.btn_stock, self.btn_journal, self.btn_conduct,
                     self.btn_nomenclature, self.btn_units):
             btn.setChecked(btn is active_btn)
+        # При открытии вкладки «Номенклатор» обновляем данные из БД
+        if index == 3:
+            self.nomenclature_tab.reload()
 
 
 def main():
