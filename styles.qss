@@ -179,21 +179,12 @@ QDateEdit:hover {
 
 /* Кнопка вызова календаря (QDateEdit) — только иконка, без рамки */
 QDateEdit {
-    padding-right: 28px;
+    padding-right: 20px;
 }
 QDateEdit::down-button {
     subcontrol-origin: border;
     subcontrol-position: top right;
-    width: 28px;
-    min-width: 28px;
-    top: 0px;
-    bottom: 0px;
-    border: none;
-    border-width: 0;
-    border-left: none;
-    outline: none;
-    margin: 0;
-    padding: 0;
+
     background-color: #FFFFFF;
     border-radius: 0 8px 8px 0;
 }
@@ -320,6 +311,19 @@ QPushButton#ExportBtn:pressed {
     background-color: #DFE1E6;
 }
 
+QPushButton#GhostButton {
+    background-color: transparent;
+    padding: 4px;
+}
+QPushButton#GhostButton:hover {
+    background-color: #F4F5F7;
+    border-radius: 6px;
+}
+QPushButton#GhostButton:pressed {
+    background-color: #DEEBFF;
+    border-radius: 6px;
+}
+
 /* ─ RADIO ────────────────────────────────────────────────────────── */
 QRadioButton {
     color: #172B4D;
@@ -354,7 +358,7 @@ QLabel {
 QListWidget {
     background-color: #FFFFFF;
     border: 1px solid #DFE1E6;
-    border-radius: 3px;
+    border-radius: 8px;
     outline: none;
     color: #172B4D;
 }
@@ -602,7 +606,7 @@ QDialog {
 QFrame#AddPanel {
     background: #FFFFFF;
     border: 1px solid #DFE1E6;
-    border-radius: 3px;
+    border-radius: 8px;
 }
 
 QWidget#QtyPair {

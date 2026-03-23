@@ -100,6 +100,17 @@ def _patch_calendar_arrows(date_edit) -> None:
             btn.setIconSize(QSize(w, h))
 
 
+class GhostButton(QPushButton):
+    """Кнопка без заливки и обводки, только иконка."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("GhostButton")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFlat(True)
+        self.setText("")  # только иконка, без текста
+
+
 class QuantitySpinBox(QWidget):
     """Счётчик в виде [−] число [+] — большие кнопки слева и справа (как на макете)."""
     valueChanged = pyqtSignal(int)
@@ -440,7 +451,7 @@ class NomenclatureTab(QWidget):
         header.setStretchLastSection(False)
         self.tree.setColumnWidth(0, 150)
         self.tree.setColumnWidth(2, 120)
-        self.tree.setColumnWidth(3, 70)
+        self.tree.setColumnWidth(3, 80)
         self.tree.setRootIsDecorated(False)
         self.tree.setIndentation(16)
         self.tree.setUniformRowHeights(True)
@@ -1796,7 +1807,7 @@ class StockTab(QWidget):
         self.tree.setColumnWidth(0, 150)
         self.tree.setColumnWidth(2, 120)
         self.tree.setColumnWidth(3, 80)
-        self.tree.setColumnWidth(4, 70)
+        self.tree.setColumnWidth(4, 80)
         self.tree.setRootIsDecorated(False)
         self.tree.setIndentation(16)
         self.tree.setUniformRowHeights(True)
@@ -2135,8 +2146,9 @@ class MainWindow(QMainWindow):
     def _apply_nav_icons(self):
         """Обновляет иконки кнопок сайдбара под текущую тему (светлая — тёмные иконки)."""
         self.btn_stock.setIcon(self._nav_icon("ph-warehouse-light"))
-        self.btn_operations_parent.setIcon(self._nav_icon("ph-arrows-left-right-light"))
-        self.btn_nomenclature.setIcon(self._nav_icon("ph-squares-four-light"))
+        self.btn_journal.setIcon(self._nav_icon("ph-squares-four-light"))
+        self.btn_conduct.setIcon(self._nav_icon("ph-arrows-left-right-light"))
+        self.btn_nomenclature.setIcon(self._nav_icon("book-bookmark"))
         self.btn_units.setIcon(self._nav_icon("ph-buildings-light"))
 
     def _load_icon(self, base_name: str) -> QIcon:
@@ -2280,19 +2292,14 @@ class MainWindow(QMainWindow):
         lbl_ops.setObjectName("NavSection")
         nav_layout.addWidget(lbl_ops)
 
-        self._operations_expanded = True
-        self.btn_operations_parent = _NavBtn("Операции", "NavParent")
-        self.btn_operations_parent.setIcon(self._nav_icon("ph-arrows-left-right-light"))
-        self.btn_operations_parent.setFixedHeight(44)
-        self.btn_operations_parent.setCheckable(False)   # только разворачивает меню
-        nav_layout.addWidget(self.btn_operations_parent)
-
-        self.btn_journal = _NavBtn("Журнал операций", "NavChild", left_padding=36)
-        self.btn_journal.setFixedHeight(38)
+        self.btn_journal = _NavBtn("Журнал операций", "NavButton")
+        self.btn_journal.setIcon(self._nav_icon("ph-squares-four-light"))
+        self.btn_journal.setFixedHeight(44)
         nav_layout.addWidget(self.btn_journal)
 
-        self.btn_conduct = _NavBtn("Проведение", "NavChild", left_padding=36)
-        self.btn_conduct.setFixedHeight(38)
+        self.btn_conduct = _NavBtn("Проведение", "NavButton")
+        self.btn_conduct.setIcon(self._nav_icon("ph-arrows-left-right-light"))
+        self.btn_conduct.setFixedHeight(44)
         nav_layout.addWidget(self.btn_conduct)
 
         nav_layout.addSpacing(8)
@@ -2303,7 +2310,7 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(lbl_ref)
 
         self.btn_nomenclature = _NavBtn("Номенклатор", "NavButton")
-        self.btn_nomenclature.setIcon(self._nav_icon("ph-squares-four-light"))
+        self.btn_nomenclature.setIcon(self._nav_icon("book-bookmark"))
         self.btn_nomenclature.setFixedHeight(44)
         nav_layout.addWidget(self.btn_nomenclature)
 
@@ -2400,7 +2407,6 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(right_panel, 1)
 
         # Подключаем сигналы
-        self.btn_operations_parent.clicked.connect(self._toggle_operations_menu)
         self.btn_stock.clicked.connect(lambda: self._switch_page(0, self.btn_stock, "Остатки на складе", "Склад / Остатки"))
         self.btn_journal.clicked.connect(lambda: self._switch_page(1, self.btn_journal, "Журнал операций", "Операции / Журнал"))
         self.btn_conduct.clicked.connect(lambda: self._switch_page(2, self.btn_conduct, "Проведение операций", "Операции / Провести"))
@@ -2408,14 +2414,6 @@ class MainWindow(QMainWindow):
         self.btn_units.clicked.connect(lambda: self._switch_page(4, self.btn_units, "Подразделения", "Справочники / Подразделения"))
 
         self._switch_page(0, self.btn_stock, "Остатки на складе", "Склад / Остатки")
-
-    def _toggle_operations_menu(self):
-        self._operations_expanded = not self._operations_expanded
-        self.btn_journal.setVisible(self._operations_expanded)
-        self.btn_conduct.setVisible(self._operations_expanded)
-        self.btn_operations_parent.setText(
-            "Операции  ▼" if self._operations_expanded else "Операции  ▶"
-        )
 
     def _switch_page(self, index: int, active_btn: "_NavBtn",
                      title: str = "", breadcrumb: str = ""):
