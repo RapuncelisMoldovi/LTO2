@@ -642,7 +642,7 @@ QPushButton#SnDropdownBtn {
     padding: 2px 10px;
     color: #172B4D;
     border: 1px solid #B3BAC5;
-    border-radius: 3px;
+    border-radius: 8px;
     background: #FFFFFF;
     min-height: 0;
     max-height: 32px;
@@ -656,9 +656,13 @@ QPushButton#DelItemBtn {
     background: transparent;
     color: #97A0AF;
     border: 1px solid #DFE1E6;
-    border-radius: 14px;
-    font-size: 12px;
+    border-radius: 12px;
+    font-size: 11px;
     padding: 0;
+    min-height: 0;
+    max-height: 24px;
+    min-width: 0;
+    max-width: 24px;
 }
 QPushButton#DelItemBtn:hover {
     background: #FF5630;
@@ -749,11 +753,19 @@ QLabel#BasketFormLbl { font-size: 11px; font-weight: 700; color: #6B778C; border
 QLabel#BasketEmptyLbl { font-size: 15px; color: #97A0AF; font-weight: 600; border: none; }
 QLabel#BasketEmptySubLbl { font-size: 12px; color: #B3BAC5; border: none; }
 
+QPushButton#DialogActionBtn {
+    min-height: 36px;
+    max-height: 36px;
+    border-radius: 8px;
+    padding: 0 20px;
+    font-size: 13px;
+}
+
 QPushButton#PostBtnIn {
     background: #00875A;
     color: #FFFFFF;
     border: none;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0 20px;
     font-weight: 600;
     min-height: 36px;
@@ -767,7 +779,7 @@ QPushButton#PostBtnOut {
     background: #FF8B00;
     color: #FFFFFF;
     border: none;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0 20px;
     font-weight: 600;
     min-height: 36px;
@@ -781,7 +793,7 @@ QPushButton#CloseBtn {
     background: transparent;
     color: #42526E;
     border: 1.5px solid #DFE1E6;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0 16px;
     min-height: 36px;
     max-height: 36px;
@@ -796,7 +808,7 @@ QPushButton#ClearBtn {
     background: transparent;
     color: #DE350B;
     border: 1.5px solid #DE350B;
-    border-radius: 3px;
+    border-radius: 8px;
     padding: 0 16px;
     min-height: 36px;
     max-height: 36px;
@@ -804,6 +816,12 @@ QPushButton#ClearBtn {
 }
 QPushButton#ClearBtn:hover { background: #FFEBE6; }
 QPushButton#ClearBtn:disabled { color: #DFE1E6; border-color: #DFE1E6; }
+
+QFrame#OpDetailHeader {
+    background: #F4F5F7;
+    border: 1px solid #DFE1E6;
+    border-radius: 4px;
+}
 
 QLabel#OpDetailKey {
     color: #6B778C;

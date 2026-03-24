@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
 
 # База данных и бэкапы
 warehouse.db
@@ -12,10 +17,13 @@ backups/
 logs/
 *.log
 crash_log.txt
+debug-*.log
 
 # Сгенерированные файлы
 *.pdf
+*.xlsx
 
 # IDE
 .vscode/
 .idea/
+.cursor/

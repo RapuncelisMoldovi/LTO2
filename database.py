@@ -1,34 +1,10 @@
 import os
-import json
-import time
 import logging
 import sqlite3
 from datetime import datetime
+from itertools import groupby
 
-logger = None  # устанавливается из main.py после инициализации логирования
-
-DEBUG_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug-2a8cbc.log")
-DEBUG_SESSION_ID = "2a8cbc"
-
-
-def _agent_debug_log(hypothesis_id: str, message: str, data: dict | None = None, run_id: str = "run1") -> None:
-    try:
-        ts_ms = int(time.time() * 1000)
-        payload = {
-            "sessionId": DEBUG_SESSION_ID,
-            "id": f"log_{ts_ms}",
-            "timestamp": ts_ms,
-            "location": "main.py",
-            "message": message,
-            "data": data or {},
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-        }
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception as e:
-        if logger:
-            logger.debug("Debug log write failed: %s", e)
+logger = logging.getLogger("LTO.database")
 
 
 class DatabaseManager:
@@ -39,8 +15,7 @@ class DatabaseManager:
             self.conn.row_factory = sqlite3.Row
             self._init_db()
         except Exception as e:
-            if logger:
-                logger.exception("Database init failed: %s", e)
+            logger.exception("Database init failed: %s", e)
             raise
 
     def _init_db(self):
@@ -118,6 +93,30 @@ class DatabaseManager:
             """
         )
 
+        # Наряды (заявки подразделений)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS work_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                order_no TEXT NOT NULL,
+                unit_id INTEGER REFERENCES units(id),
+                description TEXT,
+                status TEXT NOT NULL CHECK (status IN ('не реализован', 'реализован частично', 'реализован'))
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS work_order_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                work_order_id INTEGER NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
+                variant_id INTEGER NOT NULL REFERENCES variants(id),
+                quantity INTEGER NOT NULL CHECK (quantity > 0)
+            )
+            """
+        )
+
         # Audit log для критичных операций (приоритет 2)
         cur.execute(
             """
@@ -157,24 +156,67 @@ class DatabaseManager:
 
         self.conn.commit()
 
-        # Миграция: добавляем поле doc_name в journal, если его нет (старые БД)
+        # Миграции: добавляем поля в journal, если их нет (старые БД)
         cur.execute("PRAGMA table_info(journal)")
         cols = [r[1] for r in cur.fetchall()]
         if "doc_name" not in cols:
             cur.execute("ALTER TABLE journal ADD COLUMN doc_name TEXT")
-            self.conn.commit()
+        if "work_order_id" not in cols:
+            cur.execute("ALTER TABLE journal ADD COLUMN work_order_id INTEGER REFERENCES work_orders(id)")
+        self.conn.commit()
 
-        # Миграция: удаляем таблицу категорий (функционал категорий убран)
         cur.execute("DROP TABLE IF EXISTS categories")
         self.conn.commit()
 
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H3",
-            message="Database initialized",
-            data={"db_path": self.path},
-        )
-        # endregion
+        # Миграция: переименование статусов work_orders (ж → м род)
+        cur.execute("PRAGMA table_info(work_orders)")
+        wo_cols_info = cur.fetchall()
+        old_check = any("реализована" in (str(c[1]) + str(c[4] or "")) for c in wo_cols_info)
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_orders'")
+        create_sql = (cur.fetchone() or [None])[0] or ""
+        if "реализована" in create_sql:
+            cur.execute("ALTER TABLE work_orders RENAME TO _work_orders_old")
+            cur.execute(
+                """
+                CREATE TABLE work_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    order_no TEXT NOT NULL,
+                    unit_id INTEGER REFERENCES units(id),
+                    description TEXT,
+                    status TEXT NOT NULL CHECK (status IN ('не реализован', 'реализован частично', 'реализован'))
+                )
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO work_orders (id, created_at, order_no, unit_id, description, status)
+                SELECT id, created_at, order_no, unit_id, description,
+                    CASE status
+                        WHEN 'не реализована' THEN 'не реализован'
+                        WHEN 'реализована частично' THEN 'реализован частично'
+                        WHEN 'реализована' THEN 'реализован'
+                        ELSE status
+                    END
+                FROM _work_orders_old
+                """
+            )
+            cur.execute("DROP TABLE _work_orders_old")
+            self.conn.commit()
+
+        self._ensure_indices()
+        logger.info("Database initialized: %s", self.path)
+
+    def _ensure_indices(self):
+        cur = self.conn.cursor()
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_variant ON journal(variant_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_doc_name ON journal(doc_name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_date ON journal(date)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_work_order ON journal(work_order_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_variants_item ON variants(item_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_serial_variant ON stock_serial(variant_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_work_order_items_wo ON work_order_items(work_order_id)")
+        self.conn.commit()
 
     # --- Items & Variants ---
 
@@ -305,8 +347,6 @@ class DatabaseManager:
 
         if not rows:
             return 0, 0, ["В файле нет данных (ожидаются колонки: наименование, размер/маркер, н/н, ед. изм., тип [sn или пусто])."]
-
-        from itertools import groupby
 
         def _name_key(r):
             return r[0]
@@ -447,6 +487,246 @@ class DatabaseManager:
         self.conn.commit()
         return cur.lastrowid
 
+    # --- Work Orders (Наряды) ---
+
+    def get_work_orders_brief(self):
+        """Lightweight list for combo boxes — no status recomputation."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT wo.id, wo.order_no, wo.unit_id, u.name AS unit_name, wo.status
+            FROM work_orders wo
+            LEFT JOIN units u ON u.id = wo.unit_id
+            ORDER BY wo.id DESC
+            """
+        )
+        return cur.fetchall()
+
+    def get_work_order_fulfillment_pct(self, work_order_id: int) -> int:
+        """Returns fulfillment percentage (0–100) for a work order."""
+        items = self.get_work_order_items(work_order_id)
+        if not items:
+            return 0
+        issued = self.get_work_order_item_issue_stats(work_order_id)
+        total_req = sum(int(r["requested_qty"] or 0) for r in items)
+        total_done = sum(int(issued.get(r["variant_id"], 0)) for r in items)
+        return round(total_done / total_req * 100) if total_req > 0 else 0
+
+    def get_work_order_remaining_items(self, work_order_id: int):
+        """Returns work order items with remaining (not yet issued) quantities."""
+        items = self.get_work_order_items(work_order_id)
+        issued = self.get_work_order_item_issue_stats(work_order_id)
+        result = []
+        for row in items:
+            req = int(row["requested_qty"] or 0)
+            done = int(issued.get(row["variant_id"], 0))
+            remaining = max(0, req - done)
+            if remaining > 0:
+                result.append({
+                    "variant_id": row["variant_id"],
+                    "item_name": row["item_name"],
+                    "full_code": row["full_code"],
+                    "size_name": row["size_name"],
+                    "item_type": row["item_type"],
+                    "qty": remaining,
+                    "sn": None,
+                })
+        return result
+
+    def get_work_orders(self, search_text: str = ""):
+        cur = self.conn.cursor()
+        cur.execute("SELECT id FROM work_orders")
+        for row in cur.fetchall():
+            self.recompute_work_order_status(row["id"])
+
+        pattern = f"%{search_text.strip()}%"
+        cur.execute(
+            """
+            SELECT
+                wo.id,
+                wo.created_at,
+                wo.order_no,
+                wo.description,
+                wo.status,
+                wo.unit_id,
+                u.name AS unit_name
+            FROM work_orders wo
+            LEFT JOIN units u ON u.id = wo.unit_id
+            WHERE
+                wo.order_no LIKE ?
+                OR COALESCE(wo.description, '') LIKE ?
+                OR COALESCE(u.name, '') LIKE ?
+                OR wo.status LIKE ?
+            ORDER BY wo.id DESC
+            """,
+            (pattern, pattern, pattern, pattern),
+        )
+        return cur.fetchall()
+
+    def add_work_order(
+        self,
+        order_no: str,
+        unit_id: int | None,
+        description: str,
+        status: str,
+    ) -> int:
+        cur = self.conn.cursor()
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            """
+            INSERT INTO work_orders(created_at, order_no, unit_id, description, status)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (created_at, order_no.strip(), unit_id, description.strip(), status),
+        )
+        wid = cur.lastrowid
+        self.conn.commit()
+        self._audit("WORK_ORDER_INSERT", "work_orders", wid, f"order_no={order_no.strip()} status={status}")
+        return wid
+
+    def update_work_order(
+        self,
+        work_order_id: int,
+        order_no: str,
+        unit_id: int | None,
+        description: str,
+        status: str,
+    ):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            UPDATE work_orders
+            SET order_no = ?, unit_id = ?, description = ?, status = ?
+            WHERE id = ?
+            """,
+            (order_no.strip(), unit_id, description.strip(), status, work_order_id),
+        )
+        self.conn.commit()
+        self._audit("WORK_ORDER_UPDATE", "work_orders", work_order_id, f"order_no={order_no.strip()} status={status}")
+
+    def delete_work_order(self, work_order_id: int):
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM work_order_items WHERE work_order_id = ?", (work_order_id,))
+        cur.execute("DELETE FROM work_orders WHERE id = ?", (work_order_id,))
+        self.conn.commit()
+        self._audit("WORK_ORDER_DELETE", "work_orders", work_order_id, "")
+
+    def get_work_order_items(self, work_order_id: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                woi.id,
+                woi.work_order_id,
+                woi.variant_id,
+                woi.quantity AS requested_qty,
+                v.full_code,
+                v.size_name,
+                i.name AS item_name,
+                i.type AS item_type
+            FROM work_order_items woi
+            JOIN variants v ON v.id = woi.variant_id
+            JOIN items i ON i.id = v.item_id
+            WHERE woi.work_order_id = ?
+            ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
+            """,
+            (work_order_id,),
+        )
+        return cur.fetchall()
+
+    def add_work_order_item(self, work_order_id: int, variant_id: int, quantity: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT id, quantity FROM work_order_items WHERE work_order_id = ? AND variant_id = ?",
+            (work_order_id, variant_id),
+        )
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE work_order_items SET quantity = ? WHERE id = ?",
+                (int(row["quantity"]) + int(quantity), row["id"]),
+            )
+            item_id = row["id"]
+        else:
+            cur.execute(
+                "INSERT INTO work_order_items(work_order_id, variant_id, quantity) VALUES (?, ?, ?)",
+                (work_order_id, variant_id, int(quantity)),
+            )
+            item_id = cur.lastrowid
+        self.conn.commit()
+        self._audit("WORK_ORDER_ITEM_UPSERT", "work_order_items", item_id, f"work_order_id={work_order_id} variant_id={variant_id} qty={quantity}")
+        self.recompute_work_order_status(work_order_id)
+        return item_id
+
+    def update_work_order_item_qty(self, item_id: int, quantity: int):
+        cur = self.conn.cursor()
+        cur.execute("SELECT work_order_id FROM work_order_items WHERE id = ?", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        work_order_id = row["work_order_id"]
+        cur.execute("UPDATE work_order_items SET quantity = ? WHERE id = ?", (int(quantity), item_id))
+        self.conn.commit()
+        self._audit("WORK_ORDER_ITEM_UPDATE", "work_order_items", item_id, f"qty={quantity}")
+        self.recompute_work_order_status(work_order_id)
+
+    def delete_work_order_item(self, item_id: int):
+        cur = self.conn.cursor()
+        cur.execute("SELECT work_order_id FROM work_order_items WHERE id = ?", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        work_order_id = row["work_order_id"]
+        cur.execute("DELETE FROM work_order_items WHERE id = ?", (item_id,))
+        self.conn.commit()
+        self._audit("WORK_ORDER_ITEM_DELETE", "work_order_items", item_id, "")
+        self.recompute_work_order_status(work_order_id)
+
+    def get_work_order_item_issue_stats(self, work_order_id: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                j.variant_id,
+                SUM(
+                    CASE
+                        WHEN i.type = 'qty' THEN COALESCE(j.quantity, 0)
+                        ELSE 1
+                    END
+                ) AS issued_qty
+            FROM journal j
+            JOIN variants v ON v.id = j.variant_id
+            JOIN items i ON i.id = v.item_id
+            WHERE j.op_type = 'OUT' AND j.work_order_id = ?
+            GROUP BY j.variant_id
+            """,
+            (work_order_id,),
+        )
+        return {r["variant_id"]: int(r["issued_qty"] or 0) for r in cur.fetchall()}
+
+    def recompute_work_order_status(self, work_order_id: int):
+        items = self.get_work_order_items(work_order_id)
+        if not items:
+            new_status = "не реализован"
+        else:
+            issued_by_variant = self.get_work_order_item_issue_stats(work_order_id)
+            requested_total = sum(int(r["requested_qty"] or 0) for r in items)
+            issued_total = 0
+            for row in items:
+                req = int(row["requested_qty"] or 0)
+                issued = int(issued_by_variant.get(row["variant_id"], 0))
+                issued_total += min(req, max(issued, 0))
+            if issued_total <= 0:
+                new_status = "не реализован"
+            elif issued_total >= requested_total:
+                new_status = "реализован"
+            else:
+                new_status = "реализован частично"
+        cur = self.conn.cursor()
+        cur.execute("UPDATE work_orders SET status = ? WHERE id = ?", (new_status, work_order_id))
+        self.conn.commit()
+        return new_status
+
     # --- Search & Info ---
 
     def search_variants(self, text: str, only_in_stock: bool = False):
@@ -510,7 +790,7 @@ class DatabaseManager:
         row = cur.fetchone()
         return int(row["quantity"]) if row else 0
 
-    def adjust_qty_stock(self, variant_id: int, delta: int):
+    def adjust_qty_stock(self, variant_id: int, delta: int, *, commit: bool = True):
         cur = self.conn.cursor()
         cur.execute(
             """
@@ -520,7 +800,8 @@ class DatabaseManager:
             """,
             (variant_id, delta),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def serial_exists(self, factory_sn: str) -> bool:
         cur = self.conn.cursor()
@@ -537,27 +818,30 @@ class DatabaseManager:
         )
         return cur.fetchone() is not None
 
-    def add_serial(self, variant_id: int, factory_sn: str):
+    def add_serial(self, variant_id: int, factory_sn: str, *, commit: bool = True):
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO stock_serial(variant_id, factory_sn) VALUES (?, ?)",
             (variant_id, factory_sn.strip()),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
-    def remove_serial(self, variant_id: int, factory_sn: str) -> bool:
+    def remove_serial(self, variant_id: int, factory_sn: str, *, commit: bool = True) -> bool:
         cur = self.conn.cursor()
         cur.execute(
             "DELETE FROM stock_serial WHERE variant_id = ? AND factory_sn = ?",
             (variant_id, factory_sn.strip()),
         )
         deleted = cur.rowcount > 0
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return deleted
 
     # --- Journal ---
 
-    def _audit(self, action: str, entity_type: str, entity_id: int | None, details: str = ""):
+    def _audit(self, action: str, entity_type: str, entity_id: int | None, details: str = "", *, commit: bool = True):
+        """Write to audit_log. Set commit=False when called inside an outer transaction."""
         try:
             cur = self.conn.cursor()
             cur.execute(
@@ -567,10 +851,10 @@ class DatabaseManager:
                 """,
                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), action, entity_type, entity_id or 0, details),
             )
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
         except Exception as e:
-            if logger:
-                logger.exception("Audit log write failed: %s", e)
+            logger.exception("Audit log write failed: %s", e)
 
     def add_journal_record(
         self,
@@ -580,12 +864,15 @@ class DatabaseManager:
         factory_sn: str | None,
         unit_id: int | None,
         doc_name: str,
+        *,
+        work_order_id: int | None = None,
+        commit: bool = True,
     ):
         cur = self.conn.cursor()
         cur.execute(
             """
-            INSERT INTO journal(date, op_type, variant_id, quantity, factory_sn, unit_id, doc_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO journal(date, op_type, variant_id, quantity, factory_sn, unit_id, doc_name, work_order_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -595,11 +882,87 @@ class DatabaseManager:
                 factory_sn.strip() if factory_sn else None,
                 unit_id,
                 doc_name.strip(),
+                work_order_id,
             ),
         )
         jid = cur.lastrowid
-        self.conn.commit()
-        self._audit("JOURNAL_INSERT", "journal", jid, f"op={op_type} variant_id={variant_id} doc={doc_name.strip()}")
+        self._audit("JOURNAL_INSERT", "journal", jid, f"op={op_type} variant_id={variant_id} doc={doc_name.strip()}", commit=False)
+        if commit:
+            self.conn.commit()
+
+    def post_operation(self, basket: list[dict], op_type: str, unit_id: int, doc_name: str,
+                       work_order_id: int | None = None):
+        """Atomically post all basket items in a single transaction."""
+        try:
+            self.conn.execute("BEGIN")
+            for pos in basket:
+                vid = pos["variant_id"]
+                if pos["item_type"] == "qty":
+                    delta = pos["qty"] if op_type == "IN" else -pos["qty"]
+                    self.adjust_qty_stock(vid, delta, commit=False)
+                    self.add_journal_record(op_type, vid, pos["qty"], None, unit_id, doc_name,
+                                            work_order_id=work_order_id, commit=False)
+                else:
+                    sn = pos["sn"]
+                    if op_type == "IN":
+                        self.add_serial(vid, sn, commit=False)
+                    else:
+                        self.remove_serial(vid, sn, commit=False)
+                    self.add_journal_record(op_type, vid, 1, sn, unit_id, doc_name,
+                                            work_order_id=work_order_id, commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def reverse_operation(self, journal_rows: list[dict]):
+        """Atomically reverse a group of journal entries (one document).
+
+        For each row:
+          - OUT + qty  → add quantity back to stock
+          - OUT + serial → re-add serial to stock
+          - IN  + qty  → subtract quantity from stock
+          - IN  + serial → remove serial from stock
+        Then delete the journal rows.
+        """
+        if not journal_rows:
+            return
+        try:
+            self.conn.execute("BEGIN")
+            wo_ids = set()
+            for r in journal_rows:
+                jid = r["id"]
+                vid = r["variant_id"]
+                op = r["op_type"]
+                item_type = r["item_type"]
+                qty = int(r["quantity"] or 0)
+                sn = r["factory_sn"]
+                try:
+                    wo_id = r["work_order_id"]
+                except (KeyError, IndexError):
+                    wo_id = None
+                if wo_id:
+                    wo_ids.add(wo_id)
+
+                if item_type == "qty":
+                    delta = -qty if op == "IN" else qty
+                    self.adjust_qty_stock(vid, delta, commit=False)
+                else:
+                    if op == "IN":
+                        self.remove_serial(vid, sn, commit=False)
+                    else:
+                        self.add_serial(vid, sn, commit=False)
+
+                self.conn.execute("DELETE FROM journal WHERE id = ?", (jid,))
+                self._audit("JOURNAL_REVERSE", "journal", jid,
+                            f"reversed op={op} variant_id={vid}", commit=False)
+
+            self.conn.commit()
+            for wo_id in wo_ids:
+                self.recompute_work_order_status(wo_id)
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # --- Stock view ---
 
@@ -659,6 +1022,8 @@ class DatabaseManager:
                 j.date AS date,
                 j.op_type AS op_type,
                 j.doc_name AS doc_name,
+                j.variant_id AS variant_id,
+                j.work_order_id AS work_order_id,
                 v.size_name AS size_name,
                 v.full_code AS full_code,
                 i.name AS item_name,
@@ -738,8 +1103,7 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
         import openpyxl
         from openpyxl.styles import Font, Alignment
     except ImportError:
-        if logger:
-            logger.warning("openpyxl not installed: pip install openpyxl")
+        logger.warning("openpyxl not installed: pip install openpyxl")
         return False
     try:
         rows = db.get_journal_view(limit=10000, date_from=date_from, date_to=date_to, unit_id=unit_id)
@@ -761,12 +1125,10 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
             ws.cell(r, 6, qty)
             ws.cell(r, 7, row["unit_name"] or "")
         wb.save(path)
-        if logger:
-            logger.info("Exported journal to Excel: %s", path)
+        logger.info("Exported journal to Excel: %s", path)
         return True
     except Exception as e:
-        if logger:
-            logger.exception("Export journal Excel failed: %s", e)
+        logger.exception("Export journal Excel failed: %s", e)
         return False
 
 
@@ -806,8 +1168,7 @@ def _export_journal_pdf(db: DatabaseManager, path: str, date_from: str, date_to:
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.units import mm
     except ImportError:
-        if logger:
-            logger.warning("reportlab not installed: pip install reportlab")
+        logger.warning("reportlab not installed: pip install reportlab")
         return False
     try:
         font = _register_pdf_font()
@@ -854,12 +1215,10 @@ def _export_journal_pdf(db: DatabaseManager, path: str, date_from: str, date_to:
         ]))
 
         doc.build([header, Spacer(1, 4*mm), t])
-        if logger:
-            logger.info("Exported journal to PDF: %s", path)
+        logger.info("Exported journal to PDF: %s", path)
         return True
     except Exception as e:
-        if logger:
-            logger.exception("Export journal PDF failed: %s", e)
+        logger.exception("Export journal PDF failed: %s", e)
         return False
 
 
@@ -868,8 +1227,7 @@ def _export_stock_excel(db: DatabaseManager, path: str) -> bool:
         import openpyxl
         from openpyxl.styles import Font
     except ImportError:
-        if logger:
-            logger.warning("openpyxl not installed: pip install openpyxl")
+        logger.warning("openpyxl not installed: pip install openpyxl")
         return False
     try:
         rows = db.get_stock_view()
@@ -886,12 +1244,10 @@ def _export_stock_excel(db: DatabaseManager, path: str) -> bool:
             ws.cell(r, 3, row["stock_value"])
             ws.cell(r, 4, row["uom"])
         wb.save(path)
-        if logger:
-            logger.info("Exported stock to Excel: %s", path)
+        logger.info("Exported stock to Excel: %s", path)
         return True
     except Exception as e:
-        if logger:
-            logger.exception("Export stock Excel failed: %s", e)
+        logger.exception("Export stock Excel failed: %s", e)
         return False
 
 
@@ -903,8 +1259,7 @@ def _export_stock_pdf(db: DatabaseManager, path: str) -> bool:
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.units import mm
     except ImportError:
-        if logger:
-            logger.warning("reportlab not installed: pip install reportlab")
+        logger.warning("reportlab not installed: pip install reportlab")
         return False
     try:
         font = _register_pdf_font()
@@ -978,10 +1333,8 @@ def _export_stock_pdf(db: DatabaseManager, path: str) -> bool:
             elements.append(Spacer(1, 3 * mm))
 
         doc.build(elements)
-        if logger:
-            logger.info("Exported stock to PDF: %s", path)
+        logger.info("Exported stock to PDF: %s", path)
         return True
     except Exception as e:
-        if logger:
-            logger.exception("Export stock PDF failed: %s", e)
+        logger.exception("Export stock PDF failed: %s", e)
         return False

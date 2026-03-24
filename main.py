@@ -2,17 +2,13 @@ import sys
 import os
 import logging
 import sqlite3
-from datetime import datetime
 
-import database
 from database import (
     DatabaseManager,
-    _agent_debug_log,
     _export_journal_excel,
     _export_journal_pdf,
     _export_stock_excel,
     _export_stock_pdf,
-    _register_pdf_font,
 )
 
 from PyQt6.QtCore import Qt, QSize, QDate, pyqtSignal, QTimer, QSettings
@@ -54,7 +50,33 @@ from PyQt6.QtWidgets import (
 DB_NAME = "warehouse.db"
 LOG_DIR = "logs"
 
-# --- Логирование (приоритет 1) ---
+logger = logging.getLogger("LTO")
+
+_current_theme = "light"
+
+_THEME_COLORS = {
+    "light": {
+        "success":     "#006644",
+        "danger":      "#DE350B",
+        "warning":     "#FF8B00",
+        "muted":       "#97A0AF",
+        "muted_child": "#6B778C",
+    },
+    "dark": {
+        "success":     "#7AB39A",
+        "danger":      "#FF6B6B",
+        "warning":     "#D4A84B",
+        "muted":       "#6B6B6B",
+        "muted_child": "#888888",
+    },
+}
+
+
+def _theme_color(name: str) -> QColor:
+    """Returns a QColor adapted to the current application theme."""
+    return QColor(_THEME_COLORS.get(_current_theme, _THEME_COLORS["light"]).get(name, "#000000"))
+
+
 def _setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
     log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOG_DIR, "app.log")
@@ -66,10 +88,6 @@ def _setup_logging():
             logging.StreamHandler(sys.stderr),
         ],
     )
-    return logging.getLogger("LTO")
-
-
-logger = None  # устанавливается в main() и передаётся в database.logger
 
 
 def _patch_calendar_arrows(date_edit) -> None:
@@ -223,9 +241,9 @@ def _logo_path() -> str | None:
     return None
 
 
-def _icon_from_file(base_name: str, size: int = 20) -> QIcon:
-    """Загружает иконку PNG из icons/ с учётом HiDPI (_device_pixel_ratio).
-    Использовать для всех кнопок с иконками (Экспорт в Excel/PDF, тулбары и т.д.)."""
+def _icon_from_file(base_name: str, size: int = 20, tint: str | None = None) -> QIcon:
+    """Загружает иконку PNG из icons/ с учётом HiDPI.
+    tint — hex-цвет для перекраски (например "#EEEEEE" для тёмной темы)."""
     path = _icon_path(base_name)
     if not path:
         return QIcon()
@@ -237,31 +255,30 @@ def _icon_from_file(base_name: str, size: int = 20) -> QIcon:
     if pix.width() != target or pix.height() != target:
         pix = pix.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     pix.setDevicePixelRatio(dpr)
+    if tint:
+        out = QPixmap(pix.size())
+        out.setDevicePixelRatio(dpr)
+        out.fill(QColor(0, 0, 0, 0))
+        p = QPainter(out)
+        p.drawPixmap(0, 0, pix)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        p.fillRect(out.rect(), QColor(tint))
+        p.end()
+        pix = out
     return QIcon(pix)
 
 
-def _icon_from_file_light(base_name: str, size: int = 20) -> QIcon:
-    """Иконка из файла, перекрашенная в светлый цвет (#EEEEEE) для тёмной темы."""
-    path = _icon_path(base_name)
-    if not path:
-        return QIcon()
-    dpr = _device_pixel_ratio()
-    pix = QPixmap(path)
-    if pix.isNull():
-        return QIcon()
-    target = int(round(size * dpr))
-    if pix.width() != target or pix.height() != target:
-        pix = pix.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-    pix.setDevicePixelRatio(dpr)
-    out = QPixmap(pix.size())
-    out.setDevicePixelRatio(dpr)
-    out.fill(QColor(0, 0, 0, 0))
-    p = QPainter(out)
-    p.drawPixmap(0, 0, pix)
-    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    p.fillRect(out.rect(), QColor("#EEEEEE"))
-    p.end()
-    return QIcon(out)
+def _make_export_btn(icon_name: str, tooltip: str) -> QPushButton:
+    """Creates a 32x32 icon-only export button with theme-aware icon metadata."""
+    btn = QPushButton()
+    btn.setObjectName("ExportBtn")
+    btn.setProperty("iconName", icon_name)
+    btn.setProperty("iconSizePx", 18)
+    btn.setIcon(_icon_from_file(icon_name, 18))
+    btn.setIconSize(QSize(18, 18))
+    btn.setFixedSize(32, 32)
+    btn.setToolTip(tooltip)
+    return btn
 
 
 def _size_display(size_name: str | None) -> str:
@@ -329,10 +346,14 @@ class NewItemDialog(QDialog):
         layout.addLayout(form)
 
         btn_layout = QHBoxLayout()
-        self.ok_btn = QPushButton("OK")
+        btn_layout.addStretch()
         self.cancel_btn = QPushButton("Отмена")
-        btn_layout.addWidget(self.ok_btn)
+        self.cancel_btn.setObjectName("CloseBtn")
+        self.ok_btn = QPushButton("Сохранить")
+        self.ok_btn.setObjectName("DialogActionBtn")
+        self.ok_btn.setDefault(True)
         btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.ok_btn)
         layout.addLayout(btn_layout)
 
         self.ok_btn.clicked.connect(self.accept)
@@ -392,10 +413,14 @@ class NewVariantDialog(QDialog):
         layout.addLayout(form)
 
         btn_layout = QHBoxLayout()
-        self.ok_btn = QPushButton("OK")
+        btn_layout.addStretch()
         self.cancel_btn = QPushButton("Отмена")
-        btn_layout.addWidget(self.ok_btn)
+        self.cancel_btn.setObjectName("CloseBtn")
+        self.ok_btn = QPushButton("Сохранить")
+        self.ok_btn.setObjectName("DialogActionBtn")
+        self.ok_btn.setDefault(True)
         btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.ok_btn)
         layout.addLayout(btn_layout)
 
         self.ok_btn.clicked.connect(self.accept)
@@ -469,14 +494,7 @@ class NomenclatureTab(QWidget):
         self.edit_item_btn = QPushButton("Редактировать")
         self.delete_item_btn = QPushButton("Удалить")
         self.delete_item_btn.setObjectName("DangerBtn")
-        self.import_excel_btn = QPushButton()
-        self.import_excel_btn.setObjectName("ExportBtn")
-        self.import_excel_btn.setProperty("iconName", "microsoft-excel-logo-duotone")
-        self.import_excel_btn.setProperty("iconSizePx", 18)
-        self.import_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
-        self.import_excel_btn.setIconSize(QSize(18, 18))
-        self.import_excel_btn.setFixedSize(32, 32)
-        self.import_excel_btn.setToolTip("Загрузить из Excel")
+        self.import_excel_btn = _make_export_btn("microsoft-excel-logo-duotone", "Загрузить из Excel")
         btn_row.addWidget(self.new_item_btn)
         btn_row.addWidget(self.edit_item_btn)
         btn_row.addWidget(self.delete_item_btn)
@@ -532,8 +550,7 @@ class NomenclatureTab(QWidget):
             try:
                 self.db.add_variant(item_id, size_name, full_code, item_type)
             except sqlite3.IntegrityError as e:
-                if logger:
-                    logger.warning("Add variant duplicate: %s", e)
+                logger.warning("Add variant duplicate: %s", e)
                 QMessageBox.warning(
                     self,
                     "Ошибка",
@@ -604,8 +621,7 @@ class NomenclatureTab(QWidget):
                 new_id = self.db.add_item(name, base_code, uom, item_type)
                 self.db.add_variant(new_id, "Без размера", base_code, item_type)
             except sqlite3.IntegrityError as e:
-                if logger:
-                    logger.warning("Add item failed: %s", e)
+                logger.warning("Add item failed: %s", e)
                 QMessageBox.warning(self, "Ошибка", f"Не удалось создать изделие:\n{e}")
                 return
             self.reload()
@@ -621,8 +637,7 @@ class NomenclatureTab(QWidget):
             try:
                 self.db.update_item(item_id, name, base_code, uom, item_type)
             except sqlite3.IntegrityError as e:
-                if logger:
-                    logger.warning("Update item failed: %s", e)
+                logger.warning("Update item failed: %s", e)
                 QMessageBox.warning(self, "Ошибка", "Не удалось сохранить изделие (возможно, дубликат Н/Н).")
                 return
             self.reload()
@@ -654,11 +669,9 @@ class NomenclatureTab(QWidget):
             return
         try:
             self.db.delete_item(item_id)
-            if logger:
-                logger.info("Item deleted: id=%s name=%s", item_id, item_name)
+            logger.info("Item deleted: id=%s name=%s", item_id, item_name)
         except Exception as e:
-            if logger:
-                logger.exception("Delete item failed: %s", e)
+            logger.exception("Delete item failed: %s", e)
             QMessageBox.critical(self, "Ошибка", f"Не удалось удалить изделие:\n{e}")
             return
         self.reload()
@@ -693,8 +706,12 @@ class NomenclatureTab(QWidget):
 class OperationDetailDialog(QDialog):
     """Модальное окно с деталями одной операции."""
 
-    def __init__(self, op_data: dict, parent=None):
+    reversed = False
+
+    def __init__(self, op_data: dict, db: DatabaseManager, parent=None):
         super().__init__(parent)
+        self._op_data = op_data
+        self.db = db
         self.setObjectName("OperationDetailDialog")
         op_type  = "ПРИХОД" if op_data["op_type"] == "IN" else "ВЫДАЧА"
         self.setWindowTitle(f"Документ № {op_data['doc_name']}")
@@ -761,6 +778,10 @@ class OperationDetailDialog(QDialog):
         layout.addWidget(table, 1)
 
         btn_row = QHBoxLayout()
+        reverse_btn = QPushButton("Отменить операцию")
+        reverse_btn.setObjectName("DangerBtn")
+        reverse_btn.clicked.connect(self._on_reverse)
+        btn_row.addWidget(reverse_btn)
         btn_row.addStretch()
         close_btn = QPushButton("Закрыть")
         close_btn.setObjectName("CloseBtn")
@@ -769,13 +790,39 @@ class OperationDetailDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    def _on_reverse(self):
+        op = self._op_data
+        n = len(op["rows"])
+        op_label = "ПРИХОД" if op["op_type"] == "IN" else "ВЫДАЧА"
+        reply = QMessageBox.warning(
+            self,
+            "Отмена операции",
+            f"Отменить операцию {op_label} (документ «{op['doc_name']}», {n} поз.)?\n\n"
+            "Все позиции будут возвращены на склад (или списаны, если это был приход). "
+            "Действие необратимо.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.reverse_operation(op["rows"])
+        except Exception as e:
+            logger.exception("Reverse operation failed: %s", e)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось отменить операцию:\n{e}")
+            return
+        self.reversed = True
+        QMessageBox.information(self, "Успех", f"Операция отменена ({n} поз.).")
+        self.accept()
+
 
 class JournalTab(QWidget):
     """Вкладка журнала операций: плоский список, двойной клик открывает документ."""
 
-    def __init__(self, db: DatabaseManager, parent=None):
+    def __init__(self, db: DatabaseManager, on_data_changed=None, parent=None):
         super().__init__(parent)
         self.db = db
+        self._on_data_changed = on_data_changed
         self._ops: list[dict] = []
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -818,22 +865,8 @@ class JournalTab(QWidget):
         self.filter_btn = QPushButton("Применить")
         filter_layout.addWidget(self.filter_btn)
         filter_layout.addStretch()
-        self.export_journal_excel_btn = QPushButton()
-        self.export_journal_excel_btn.setObjectName("ExportBtn")
-        self.export_journal_excel_btn.setProperty("iconName", "microsoft-excel-logo-duotone")
-        self.export_journal_excel_btn.setProperty("iconSizePx", 18)
-        self.export_journal_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
-        self.export_journal_excel_btn.setIconSize(QSize(18, 18))
-        self.export_journal_excel_btn.setFixedSize(32, 32)
-        self.export_journal_excel_btn.setToolTip("Экспорт в Excel")
-        self.export_journal_pdf_btn = QPushButton()
-        self.export_journal_pdf_btn.setObjectName("ExportBtn")
-        self.export_journal_pdf_btn.setProperty("iconName", "file-pdf-duotone")
-        self.export_journal_pdf_btn.setProperty("iconSizePx", 18)
-        self.export_journal_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone", 18))
-        self.export_journal_pdf_btn.setIconSize(QSize(18, 18))
-        self.export_journal_pdf_btn.setFixedSize(32, 32)
-        self.export_journal_pdf_btn.setToolTip("Экспорт в PDF")
+        self.export_journal_excel_btn = _make_export_btn("microsoft-excel-logo-duotone", "Экспорт в Excel")
+        self.export_journal_pdf_btn = _make_export_btn("file-pdf-duotone", "Экспорт в PDF")
         filter_layout.addWidget(self.export_journal_excel_btn)
         filter_layout.addWidget(self.export_journal_pdf_btn)
         main_layout.addLayout(filter_layout)
@@ -842,7 +875,7 @@ class JournalTab(QWidget):
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Поиск:"))
         self.journal_search_edit = QLineEdit()
-        self.journal_search_edit.setPlaceholderText("Документ, дата или наименование имущества...")
+        self.journal_search_edit.setPlaceholderText("Документ, дата или наименование имущества\u2026")
         self.journal_search_edit.textChanged.connect(lambda _: self._search_timer.start())
         search_layout.addWidget(self.journal_search_edit)
         main_layout.addLayout(search_layout)
@@ -877,8 +910,12 @@ class JournalTab(QWidget):
 
     def _on_row_double_click(self, row: int, _col: int):
         if 0 <= row < len(self._ops):
-            dlg = OperationDetailDialog(self._ops[row], self)
+            dlg = OperationDetailDialog(self._ops[row], self.db, self)
             dlg.exec()
+            if dlg.reversed:
+                self.load_journal()
+                if self._on_data_changed:
+                    self._on_data_changed()
 
     def load_journal(self):
         from collections import OrderedDict
@@ -967,6 +1004,9 @@ class BasketDialog(QDialog):
         db: DatabaseManager,
         op_type: str,
         units: list,
+        preselect_unit_id: int | None = None,
+        work_order_name: str | None = None,
+        work_order_id: int | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -975,6 +1015,9 @@ class BasketDialog(QDialog):
         self.db = db
         self._op_type = op_type
         self._units = units
+        self._preselect_unit_id = preselect_unit_id
+        self._work_order_name = work_order_name
+        self._work_order_id = work_order_id
 
         self.setWindowTitle("Корзина операции")
         self.setMinimumWidth(780)
@@ -1013,6 +1056,10 @@ class BasketDialog(QDialog):
         header_layout.addWidget(badge)
         header_layout.addWidget(title_lbl)
         header_layout.addWidget(self.count_lbl)
+        if self._work_order_name:
+            wo_lbl = QLabel(f"  ·  Наряд: {self._work_order_name}")
+            wo_lbl.setObjectName("BasketCountLbl")
+            header_layout.addWidget(wo_lbl)
         header_layout.addStretch()
         root.addWidget(header_frame)
 
@@ -1021,38 +1068,6 @@ class BasketDialog(QDialog):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(24, 20, 24, 16)
         content_layout.setSpacing(16)
-
-        # Таблица
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N", ""])
-        h = self.table.horizontalHeader()
-        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(4, 40)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        content_layout.addWidget(self.table, 1)
-
-        # Empty state
-        self.empty_widget = QFrame()
-        self.empty_widget.setObjectName("BasketEmptyFrame")
-        empty_layout = QVBoxLayout(self.empty_widget)
-        empty_layout.setContentsMargins(0, 40, 0, 40)
-        empty_lbl = QLabel("Корзина пуста")
-        empty_lbl.setObjectName("BasketEmptyLbl")
-        empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub_lbl = QLabel("Добавьте товары из поиска")
-        sub_lbl.setObjectName("BasketEmptySubLbl")
-        sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_layout.addWidget(empty_lbl)
-        empty_layout.addWidget(sub_lbl)
-        content_layout.addWidget(self.empty_widget)
 
         # Форма: документ + подразделение
         form_frame = QFrame()
@@ -1084,12 +1099,48 @@ class BasketDialog(QDialog):
         self.unit_combo.setMinimumWidth(200)
         for u in self._units:
             self.unit_combo.addItem(u["name"], u["id"])
+        if self._preselect_unit_id is not None:
+            idx = self.unit_combo.findData(self._preselect_unit_id)
+            if idx >= 0:
+                self.unit_combo.setCurrentIndex(idx)
         unit_col.addWidget(unit_lbl)
         unit_col.addWidget(self.unit_combo)
 
         form_layout.addLayout(doc_col, 1)
         form_layout.addLayout(unit_col)
         content_layout.addWidget(form_frame)
+
+        # Таблица
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N", ""])
+        h = self.table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(1, 120)
+        self.table.setColumnWidth(4, 44)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        content_layout.addWidget(self.table, 1)
+
+        # Empty state
+        self.empty_widget = QFrame()
+        self.empty_widget.setObjectName("BasketEmptyFrame")
+        empty_layout = QVBoxLayout(self.empty_widget)
+        empty_layout.setContentsMargins(0, 40, 0, 40)
+        empty_lbl = QLabel("Корзина пуста")
+        empty_lbl.setObjectName("BasketEmptyLbl")
+        empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub_lbl = QLabel("Добавьте товары из поиска")
+        sub_lbl.setObjectName("BasketEmptySubLbl")
+        sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(empty_lbl)
+        empty_layout.addWidget(sub_lbl)
+        content_layout.addWidget(self.empty_widget)
 
         root.addWidget(content, 1)
 
@@ -1141,7 +1192,7 @@ class BasketDialog(QDialog):
             self.table.setItem(i, 3, qty_item)
             del_btn = QPushButton("✕")
             del_btn.setObjectName("DelItemBtn")
-            del_btn.setFixedSize(28, 28)
+            del_btn.setFixedSize(24, 24)
             del_btn.clicked.connect(lambda _, idx=i: self._remove_item(idx))
             container = QWidget()
             c_layout = QHBoxLayout(container)
@@ -1211,24 +1262,11 @@ class BasketDialog(QDialog):
             )
             return
 
-        # ── Проводим ──
         try:
-            for pos in self._basket:
-                vid = pos["variant_id"]
-                if pos["item_type"] == "qty":
-                    delta = pos["qty"] if self._op_type == "IN" else -pos["qty"]
-                    self.db.adjust_qty_stock(vid, delta)
-                    self.db.add_journal_record(self._op_type, vid, pos["qty"], None, unit_id, doc_name)
-                else:
-                    sn = pos["sn"]
-                    if self._op_type == "IN":
-                        self.db.add_serial(vid, sn)
-                    else:
-                        self.db.remove_serial(vid, sn)
-                    self.db.add_journal_record(self._op_type, vid, 1, sn, unit_id, doc_name)
-        except sqlite3.IntegrityError as e:
-            if logger:
-                logger.exception("Post operation failed: %s", e)
+            self.db.post_operation(self._basket, self._op_type, unit_id, doc_name,
+                                   work_order_id=self._work_order_id)
+        except Exception as e:
+            logger.exception("Post operation failed: %s", e)
             QMessageBox.warning(self, "Ошибка БД", f"Не удалось провести операцию:\n{e}")
             return
 
@@ -1243,11 +1281,12 @@ class OperationsTab(QWidget):
     # Структура позиции в корзине
     # {variant_id, item_name, full_code, size_name, item_type, qty, sn}
 
-    def __init__(self, db: DatabaseManager, stock_tab_updater, refresh_journal=None, parent=None):
+    def __init__(self, db: DatabaseManager, stock_tab_updater, refresh_journal=None, refresh_work_orders=None, parent=None):
         super().__init__(parent)
         self.db = db
         self.stock_tab_updater = stock_tab_updater
         self.refresh_journal = refresh_journal
+        self.refresh_work_orders = refresh_work_orders
         self.selected_variant = None
         self._search_rows = []
         self._basket: list[dict] = []
@@ -1262,7 +1301,7 @@ class OperationsTab(QWidget):
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(12)
 
-        # ── Строка: тип операции + кнопка Корзина ──
+        # ── Строка: тип операции + наряд + корзина ──
         op_bar = QHBoxLayout()
         self.in_radio = QRadioButton("ПРИХОД")
         self.out_radio = QRadioButton("ВЫДАЧА")
@@ -1272,8 +1311,15 @@ class OperationsTab(QWidget):
         self.op_group.addButton(self.out_radio)
         op_bar.addWidget(self.in_radio)
         op_bar.addWidget(self.out_radio)
-        op_bar.addStretch()
-        self.basket_btn = QPushButton("Корзина (0)")
+        op_bar.addSpacing(12)
+        op_bar.addWidget(QLabel("Наряд:"))
+        self.wo_combo = QComboBox()
+        self.wo_combo.setMinimumWidth(220)
+        op_bar.addWidget(self.wo_combo, 1)
+        self.wo_load_btn = QPushButton("Загрузить")
+        op_bar.addWidget(self.wo_load_btn)
+        op_bar.addSpacing(12)
+        self.basket_btn = QPushButton("Корзина")
         self.basket_btn.setObjectName("BasketBtn")
         self.basket_btn.setMinimumWidth(130)
         op_bar.addWidget(self.basket_btn)
@@ -1283,7 +1329,7 @@ class OperationsTab(QWidget):
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("Поиск:"))
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Название или Н/Н код...")
+        self.search_edit.setPlaceholderText("Название или Н/Н код\u2026")
         self.search_btn = QPushButton("Найти")
         search_row.addWidget(self.search_edit, 1)
         search_row.addWidget(self.search_btn)
@@ -1377,14 +1423,76 @@ class OperationsTab(QWidget):
         self.basket_btn.clicked.connect(self._open_basket)
         self.in_radio.toggled.connect(self._on_op_type_changed)
         self.out_radio.toggled.connect(self._on_op_type_changed)
+        self.wo_load_btn.clicked.connect(self._on_load_from_work_order)
 
         self._set_input_mode(None)
         self._update_basket_btn()
+        self._reload_work_orders()
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     def load_units(self):
         self._units = list(self.db.get_units())
+
+    def _reload_work_orders(self):
+        self.wo_combo.clear()
+        self.wo_combo.addItem("— без наряда —", None)
+        for wo in self.db.get_work_orders_brief():
+            status_mark = ""
+            if wo["status"] == "реализован":
+                status_mark = " ✓"
+            elif wo["status"] == "реализован частично":
+                status_mark = " ◐"
+            label = f"{wo['order_no']}"
+            if wo["unit_name"]:
+                label += f"  ({wo['unit_name']})"
+            label += status_mark
+            self.wo_combo.addItem(label, wo["id"])
+
+    def _on_load_from_work_order(self):
+        wo_id = self.wo_combo.currentData()
+        if wo_id is None:
+            QMessageBox.warning(self, "Наряд", "Выберите наряд из списка.")
+            return
+
+        remaining = self.db.get_work_order_remaining_items(wo_id)
+        pct = self.db.get_work_order_fulfillment_pct(wo_id)
+
+        if not remaining:
+            QMessageBox.information(
+                self, "Наряд",
+                f"Наряд реализован на {pct}%.\nНевыданных позиций нет.",
+            )
+            return
+
+        qty_items = [pos for pos in remaining if pos["item_type"] == "qty"]
+        serial_items = [pos for pos in remaining if pos["item_type"] == "serial"]
+
+        info = f"Реализация наряда: {pct}%\n"
+        if qty_items and serial_items:
+            info += (
+                f"Загружено {len(qty_items)} поз. (мат. средства).\n"
+                f"Основные средства ({len(serial_items)} поз.) требуют ручного выбора S/N — добавьте их через поиск."
+            )
+        elif qty_items:
+            info += f"Загружено {len(qty_items)} поз. в корзину."
+        else:
+            info += f"Основные средства ({len(serial_items)} поз.) требуют ручного выбора S/N — добавьте их через поиск."
+        QMessageBox.information(self, "Наряд", info)
+
+        for pos in qty_items:
+            existing = next(
+                (p for p in self._basket if p["variant_id"] == pos["variant_id"] and p["item_type"] == "qty"),
+                None,
+            )
+            if existing:
+                existing["qty"] += pos["qty"]
+            else:
+                self._basket.append(dict(pos))
+
+        self._update_basket_btn()
+        if self.out_radio.isChecked():
+            self._do_search(self.search_edit.text().strip())
 
     def _update_sn_dropdown_text(self):
         n = len(self._sn_selected)
@@ -1478,18 +1586,30 @@ class OperationsTab(QWidget):
 
     def _update_basket_btn(self):
         n = len(self._basket)
-        self.basket_btn.setText(f"Корзина ({n})")
+        self.basket_btn.setText(f"Корзина · {n}" if n else "Корзина")
         self.basket_btn.setProperty("hasItems", "true" if n > 0 else "false")
         self.basket_btn.style().unpolish(self.basket_btn)
         self.basket_btn.style().polish(self.basket_btn)
 
     def _open_basket(self):
         op_type = "IN" if self.in_radio.isChecked() else "OUT"
+        wo_id = self.wo_combo.currentData()
+        wo_unit_id = None
+        wo_name = None
+        if wo_id is not None:
+            for wo in self.db.get_work_orders_brief():
+                if wo["id"] == wo_id:
+                    wo_unit_id = wo["unit_id"]
+                    wo_name = wo["order_no"]
+                    break
         dlg = BasketDialog(
             basket=self._basket,
             db=self.db,
             op_type=op_type,
             units=self._units,
+            preselect_unit_id=wo_unit_id,
+            work_order_name=wo_name,
+            work_order_id=wo_id,
             parent=self,
         )
         result = dlg.exec()
@@ -1510,8 +1630,11 @@ class OperationsTab(QWidget):
             self._update_sn_dropdown_text()
             self.qty_spin.setValue(1)
             self.load_units()
+            self._reload_work_orders()
             if callable(self.refresh_journal):
                 self.refresh_journal()
+            if callable(self.refresh_work_orders):
+                self.refresh_work_orders()
             self.stock_tab_updater()
         else:
             self._refresh_results_table()
@@ -1537,9 +1660,9 @@ class OperationsTab(QWidget):
             stock_item = QTableWidgetItem(str(stock_val))
             stock_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if is_out:
-                stock_item.setForeground(QColor("#006644") if stock_val > 0 else QColor("#DE350B"))
+                stock_item.setForeground(_theme_color("success") if stock_val > 0 else _theme_color("danger"))
             else:
-                stock_item.setForeground(QColor("#97A0AF"))
+                stock_item.setForeground(_theme_color("muted"))
             self.results_table.setItem(i, 3, stock_item)
             self.results_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, row["variant_id"])
 
@@ -1585,7 +1708,7 @@ class OperationsTab(QWidget):
             stock_val = row["stock_value"]
             stock_item = QTableWidgetItem(str(stock_val))
             stock_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            stock_item.setForeground(QColor("#006644") if stock_val > 0 else QColor("#DE350B"))
+            stock_item.setForeground(_theme_color("success") if stock_val > 0 else _theme_color("danger"))
             self.results_table.setItem(i, 3, stock_item)
             self.results_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, row["variant_id"])
         self.results_table.setSortingEnabled(True)
@@ -1749,6 +1872,398 @@ class OperationsTab(QWidget):
         self._refresh_results_table()
 
 
+class WorkOrderDialog(QDialog):
+    def __init__(self, db: DatabaseManager, parent=None, work_order: dict | None = None):
+        super().__init__(parent)
+        self.db = db
+        self.work_order = work_order
+        self.setWindowTitle("Редактировать наряд" if work_order else "Новый наряд")
+        self.setMinimumWidth(540)
+        self._build_ui()
+        self._load_units()
+        if work_order:
+            self._fill_form(work_order)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self.order_no_edit = QLineEdit()
+        self.order_no_edit.setPlaceholderText("Например: НР-2026-001")
+        form.addRow("Номер наряда:", self.order_no_edit)
+
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItem("— не выбрано —", None)
+        form.addRow("Подразделение:", self.unit_combo)
+
+        self.description_edit = QLineEdit()
+        self.description_edit.setPlaceholderText("Что нужно выдать со склада")
+        form.addRow("Описание:", self.description_edit)
+
+        layout.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.setObjectName("CloseBtn")
+        save_btn = QPushButton("Сохранить")
+        save_btn.setObjectName("DialogActionBtn")
+        save_btn.setDefault(True)
+        cancel_btn.clicked.connect(self.reject)
+        save_btn.clicked.connect(self.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _load_units(self):
+        for row in self.db.get_units():
+            self.unit_combo.addItem(row["name"], row["id"])
+
+    def _fill_form(self, work_order: dict):
+        self.order_no_edit.setText(work_order.get("order_no") or "")
+        self.description_edit.setText(work_order.get("description") or "")
+        unit_id = work_order.get("unit_id")
+        idx_unit = self.unit_combo.findData(unit_id)
+        self.unit_combo.setCurrentIndex(idx_unit if idx_unit >= 0 else 0)
+
+    def get_data(self) -> tuple[str, int | None, str]:
+        order_no = self.order_no_edit.text().strip()
+        unit_id = self.unit_combo.currentData()
+        description = self.description_edit.text().strip()
+        return order_no, unit_id, description
+
+    def accept(self):
+        order_no, _unit_id, _description = self.get_data()
+        if not order_no:
+            QMessageBox.warning(self, "Ошибка", "Введите номер наряда.")
+            return
+        super().accept()
+
+
+class WorkOrderItemsDialog(QDialog):
+    def __init__(self, db: DatabaseManager, work_order: dict, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.work_order = work_order
+        self._search_rows: list[dict] = []
+        self.setWindowTitle(f"Состав наряда: {work_order['order_no']}")
+        self.setMinimumSize(900, 560)
+        self._build_ui()
+        self.reload_items()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+
+        note = QLabel("Статус наряда считается автоматически по выдачам (ВЫДАЧА) с тем же номером документа.")
+        note.setObjectName("JournalHint")
+        layout.addWidget(note)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Поиск позиции:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Название, Н/Н, размер\u2026")
+        self.search_btn = QPushButton("Найти")
+        self.qty_spin = QuantitySpinBox()
+        self.qty_spin.setRange(1, 1_000_000)
+        self.qty_spin.setValue(1)
+        self.qty_spin.setFixedWidth(110)
+        self.add_btn = QPushButton("Добавить позицию")
+        top.addWidget(self.search_edit, 1)
+        top.addWidget(self.search_btn)
+        top.addWidget(QLabel("Кол-во:"))
+        top.addWidget(self.qty_spin)
+        top.addWidget(self.add_btn)
+        layout.addLayout(top)
+
+        self.search_table = QTableWidget(0, 4)
+        self.search_table.setHorizontalHeaderLabels(["Код", "Название", "Размер", "Тип"])
+        hs = self.search_table.horizontalHeader()
+        hs.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hs.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hs.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        hs.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.search_table.setColumnWidth(2, 120)
+        self.search_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.search_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.search_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.search_table, 1)
+
+        lbl = QLabel("Позиции наряда")
+        lbl.setObjectName("JournalHint")
+        layout.addWidget(lbl)
+
+        self.items_table = QTableWidget(0, 7)
+        self.items_table.setHorizontalHeaderLabels(
+            ["ID", "Код", "Название", "Размер", "Запрошено", "Выдано", "Осталось"]
+        )
+        hi = self.items_table.horizontalHeader()
+        hi.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hi.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hi.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hi.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        hi.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hi.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        hi.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.items_table.setColumnWidth(3, 120)
+        self.items_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.items_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.items_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.items_table, 1)
+
+        btn_row = QHBoxLayout()
+        self.edit_qty_btn = QPushButton("Изменить количество")
+        self.edit_qty_btn.setObjectName("DialogActionBtn")
+        self.remove_btn = QPushButton("Удалить позицию")
+        self.remove_btn.setObjectName("DangerBtn")
+        close_btn = QPushButton("Закрыть")
+        close_btn.setObjectName("CloseBtn")
+        btn_row.addWidget(self.edit_qty_btn)
+        btn_row.addWidget(self.remove_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self.search_btn.clicked.connect(self.on_search)
+        self.search_edit.returnPressed.connect(self.on_search)
+        self.add_btn.clicked.connect(self.on_add_item)
+        self.edit_qty_btn.clicked.connect(self.on_edit_qty)
+        self.remove_btn.clicked.connect(self.on_remove_item)
+        close_btn.clicked.connect(self.accept)
+
+    def on_search(self):
+        text = self.search_edit.text().strip()
+        self._search_rows = [dict(r) for r in self.db.search_variants(text, only_in_stock=False)]
+        self.search_table.setRowCount(0)
+        for i, row in enumerate(self._search_rows):
+            self.search_table.insertRow(i)
+            code_item = QTableWidgetItem(row["full_code"] or "")
+            code_item.setData(Qt.ItemDataRole.UserRole, row["variant_id"])
+            self.search_table.setItem(i, 0, code_item)
+            self.search_table.setItem(i, 1, QTableWidgetItem(row["item_name"] or ""))
+            self.search_table.setItem(i, 2, QTableWidgetItem(_size_display(row["size_name"])))
+            self.search_table.setItem(i, 3, QTableWidgetItem("qty" if row["item_type"] == "qty" else "serial"))
+
+    def _selected_variant_id(self) -> int | None:
+        row = self.search_table.currentRow()
+        if row < 0:
+            return None
+        item = self.search_table.item(row, 0)
+        if not item:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def on_add_item(self):
+        variant_id = self._selected_variant_id()
+        if variant_id is None:
+            QMessageBox.warning(self, "Состав наряда", "Выберите позицию из результатов поиска.")
+            return
+        qty = self.qty_spin.value()
+        self.db.add_work_order_item(self.work_order["id"], variant_id, qty)
+        self.reload_items()
+
+    def reload_items(self):
+        items = [dict(r) for r in self.db.get_work_order_items(self.work_order["id"])]
+        issued = self.db.get_work_order_item_issue_stats(self.work_order["id"])
+        self.items_table.setRowCount(0)
+        for i, row in enumerate(items):
+            self.items_table.insertRow(i)
+            id_item = QTableWidgetItem(str(row["id"]))
+            id_item.setData(Qt.ItemDataRole.UserRole, row["id"])
+            self.items_table.setItem(i, 0, id_item)
+            self.items_table.setItem(i, 1, QTableWidgetItem(row["full_code"] or ""))
+            self.items_table.setItem(i, 2, QTableWidgetItem(row["item_name"] or ""))
+            self.items_table.setItem(i, 3, QTableWidgetItem(_size_display(row["size_name"])))
+            req = int(row["requested_qty"] or 0)
+            done = int(issued.get(row["variant_id"], 0))
+            left = max(0, req - done)
+            self.items_table.setItem(i, 4, QTableWidgetItem(str(req)))
+            done_item = QTableWidgetItem(str(done))
+            if done >= req and req > 0:
+                done_item.setForeground(_theme_color("success"))
+            self.items_table.setItem(i, 5, done_item)
+            left_item = QTableWidgetItem(str(left))
+            if left > 0:
+                left_item.setForeground(_theme_color("danger"))
+            self.items_table.setItem(i, 6, left_item)
+        self.db.recompute_work_order_status(self.work_order["id"])
+
+    def _selected_work_order_item_id(self) -> int | None:
+        row = self.items_table.currentRow()
+        if row < 0:
+            return None
+        id_item = self.items_table.item(row, 0)
+        if not id_item:
+            return None
+        return id_item.data(Qt.ItemDataRole.UserRole)
+
+    def on_edit_qty(self):
+        item_id = self._selected_work_order_item_id()
+        if item_id is None:
+            QMessageBox.warning(self, "Состав наряда", "Выберите позицию для изменения количества.")
+            return
+        current_qty = int(self.items_table.item(self.items_table.currentRow(), 4).text())
+        qty, ok = QInputDialog.getInt(self, "Количество", "Новое количество:", current_qty, 1, 1_000_000)
+        if not ok:
+            return
+        self.db.update_work_order_item_qty(item_id, qty)
+        self.reload_items()
+
+    def on_remove_item(self):
+        item_id = self._selected_work_order_item_id()
+        if item_id is None:
+            QMessageBox.warning(self, "Состав наряда", "Выберите позицию для удаления.")
+            return
+        self.db.delete_work_order_item(item_id)
+        self.reload_items()
+
+
+class WorkOrdersTab(QWidget):
+    STATUSES = ["не реализован", "реализован частично", "реализован"]
+
+    def __init__(self, db: DatabaseManager, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._rows: list[dict] = []
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self.reload)
+        self._build_ui()
+        self.reload()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+
+        top_row = QHBoxLayout()
+        top_row.addWidget(QLabel("Поиск:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Номер наряда, подразделение, статус, описание\u2026")
+        top_row.addWidget(self.search_edit, 1)
+        self.search_edit.textChanged.connect(lambda _: self._search_timer.start())
+        layout.addLayout(top_row)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["ID", "Наряд", "Подразделение", "Статус", "Создан"])
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSortingEnabled(True)
+        layout.addWidget(self.table, 1)
+
+        btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("Добавить наряд")
+        self.edit_btn = QPushButton("Редактировать")
+        self.items_btn = QPushButton("Состав наряда")
+        self.delete_btn = QPushButton("Удалить")
+        self.delete_btn.setObjectName("DangerBtn")
+        btn_row.addWidget(self.add_btn)
+        btn_row.addWidget(self.edit_btn)
+        btn_row.addWidget(self.items_btn)
+        btn_row.addWidget(self.delete_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.add_btn.clicked.connect(self.on_add)
+        self.edit_btn.clicked.connect(self.on_edit)
+        self.items_btn.clicked.connect(self.on_items)
+        self.delete_btn.clicked.connect(self.on_delete)
+        self.table.cellDoubleClicked.connect(lambda *_: self.on_items())
+
+    def reload(self):
+        self._rows = [dict(r) for r in self.db.get_work_orders(self.search_edit.text())]
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        for i, row in enumerate(self._rows):
+            self.table.insertRow(i)
+            id_item = QTableWidgetItem(str(row["id"]))
+            id_item.setData(Qt.ItemDataRole.UserRole, row["id"])
+            self.table.setItem(i, 0, id_item)
+            self.table.setItem(i, 1, QTableWidgetItem(row["order_no"] or ""))
+            self.table.setItem(i, 2, QTableWidgetItem(row["unit_name"] or "—"))
+            pct = self.db.get_work_order_fulfillment_pct(row["id"])
+            status_text = f"{row['status'] or ''} · {pct}%"
+            status_item = QTableWidgetItem(status_text)
+            if row["status"] == "реализован":
+                status_item.setForeground(_theme_color("success"))
+            elif row["status"] == "реализован частично":
+                status_item.setForeground(_theme_color("warning"))
+            else:
+                status_item.setForeground(_theme_color("danger"))
+            self.table.setItem(i, 3, status_item)
+            self.table.setItem(i, 4, QTableWidgetItem(row["created_at"] or ""))
+        self.table.setSortingEnabled(True)
+
+    def _selected_work_order(self) -> dict | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        id_item = self.table.item(row, 0)
+        if not id_item:
+            return None
+        work_order_id = id_item.data(Qt.ItemDataRole.UserRole)
+        return next((r for r in self._rows if r["id"] == work_order_id), None)
+
+    def on_add(self):
+        dlg = WorkOrderDialog(self.db, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        order_no, unit_id, description = dlg.get_data()
+        self.db.add_work_order(order_no, unit_id, description, "не реализован")
+        self.reload()
+
+    def on_edit(self):
+        row = self._selected_work_order()
+        if not row:
+            QMessageBox.warning(self, "Наряды", "Выберите наряд для редактирования.")
+            return
+        dlg = WorkOrderDialog(self.db, self, work_order=row)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        order_no, unit_id, description = dlg.get_data()
+        self.db.update_work_order(row["id"], order_no, unit_id, description, row["status"] or "не реализован")
+        self.reload()
+
+    def on_items(self):
+        row = self._selected_work_order()
+        if not row:
+            QMessageBox.warning(self, "Наряды", "Выберите наряд.")
+            return
+        dlg = WorkOrderItemsDialog(self.db, row, self)
+        dlg.exec()
+        self.reload()
+
+    def on_delete(self):
+        row = self._selected_work_order()
+        if not row:
+            QMessageBox.warning(self, "Наряды", "Выберите наряд для удаления.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Удаление наряда",
+            f"Удалить наряд «{row['order_no']}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.db.delete_work_order(row["id"])
+        self.reload()
+
+
 class StockTab(QWidget):
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
@@ -1769,25 +2284,11 @@ class StockTab(QWidget):
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Поиск:"))
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Начните вводить для поиска...")
+        self.search_edit.setPlaceholderText("По наименованию и номенклатурному номеру\u2026")
         search_layout.addWidget(self.search_edit)
         search_layout.addStretch()
-        self.export_stock_excel_btn = QPushButton()
-        self.export_stock_excel_btn.setObjectName("ExportBtn")
-        self.export_stock_excel_btn.setProperty("iconName", "microsoft-excel-logo-duotone")
-        self.export_stock_excel_btn.setProperty("iconSizePx", 18)
-        self.export_stock_excel_btn.setIcon(_icon_from_file("microsoft-excel-logo-duotone", 18))
-        self.export_stock_excel_btn.setIconSize(QSize(18, 18))
-        self.export_stock_excel_btn.setFixedSize(32, 32)
-        self.export_stock_excel_btn.setToolTip("Экспорт в Excel")
-        self.export_stock_pdf_btn = QPushButton()
-        self.export_stock_pdf_btn.setObjectName("ExportBtn")
-        self.export_stock_pdf_btn.setProperty("iconName", "file-pdf-duotone")
-        self.export_stock_pdf_btn.setProperty("iconSizePx", 18)
-        self.export_stock_pdf_btn.setIcon(_icon_from_file("file-pdf-duotone", 18))
-        self.export_stock_pdf_btn.setIconSize(QSize(18, 18))
-        self.export_stock_pdf_btn.setFixedSize(32, 32)
-        self.export_stock_pdf_btn.setToolTip("Экспорт в PDF")
+        self.export_stock_excel_btn = _make_export_btn("microsoft-excel-logo-duotone", "Экспорт в Excel")
+        self.export_stock_pdf_btn = _make_export_btn("file-pdf-duotone", "Экспорт в PDF")
         search_layout.addWidget(self.export_stock_excel_btn)
         search_layout.addWidget(self.export_stock_pdf_btn)
         layout.addLayout(search_layout)
@@ -1891,7 +2392,7 @@ class StockTab(QWidget):
                     QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
                 )
                 for col in range(5):
-                    sn_node.setForeground(col, QColor("#6B778C"))
+                    sn_node.setForeground(col, _theme_color("muted_child"))
             if top.childCount() == 0:
                 top.setChildIndicatorPolicy(
                     QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
@@ -1914,7 +2415,7 @@ class StockTab(QWidget):
                     QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
                 )
                 for col in range(5):
-                    child.setForeground(col, QColor("#6B778C"))
+                    child.setForeground(col, _theme_color("muted_child"))
             top.setExpanded(False)
 
         else:
@@ -1963,13 +2464,6 @@ class UnitsTab(QWidget):
         super().__init__(parent)
         self.db = db
         self.units_changed_callback = units_changed_callback
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1",
-            message="UnitsTab.__init__ entered",
-            data={},
-        )
-        # endregion
         self._build_ui()
         self.reload()
 
@@ -1985,6 +2479,7 @@ class UnitsTab(QWidget):
         btn_layout = QHBoxLayout()
         self.add_btn = QPushButton("Добавить подразделение")
         self.delete_btn = QPushButton("Удалить выбранное")
+        self.delete_btn.setObjectName("DangerBtn")
         btn_layout.addWidget(self.add_btn)
         btn_layout.addWidget(self.delete_btn)
         layout.addLayout(btn_layout)
@@ -1993,24 +2488,10 @@ class UnitsTab(QWidget):
         self.delete_btn.clicked.connect(self.on_delete)
 
     def reload(self):
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1",
-            message="UnitsTab.reload start",
-            data={},
-        )
-        # endregion
         self.list_widget.clear()
         self._units = self.db.get_units()
         for u in self._units:
             text = f"{u['name']}"
-            # region agent log
-            _agent_debug_log(
-                hypothesis_id="H1",
-                message="UnitsTab.reload add unit",
-                data={"unit_id": u["id"], "name": u["name"]},
-            )
-            # endregion
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, u["id"])
             self.list_widget.addItem(item)
@@ -2026,8 +2507,7 @@ class UnitsTab(QWidget):
         try:
             self.db.add_unit(name)
         except sqlite3.IntegrityError as e:
-            if logger:
-                logger.warning("Add unit duplicate: %s", e)
+            logger.warning("Add unit duplicate: %s", e)
             QMessageBox.warning(self, "Ошибка", "Подразделение с таким именем уже существует.")
             return
         self.reload()
@@ -2052,8 +2532,7 @@ class UnitsTab(QWidget):
         try:
             self.db.delete_unit(unit_id)
         except sqlite3.IntegrityError as e:
-            if logger:
-                logger.warning("Delete unit in use: %s", e)
+            logger.warning("Delete unit in use: %s", e)
             QMessageBox.warning(
                 self,
                 "Ошибка",
@@ -2076,7 +2555,7 @@ class _NavBtn(QPushButton):
         self.setObjectName(obj_name)
         self.setCheckable(True)
         self.setIconSize(QSize(24, 20))
-        self.setFixedHeight(48)
+        self.setFixedHeight(44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
@@ -2099,13 +2578,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._app = app
         self._theme = QSettings("LTO2", "App").value(THEME_SETTINGS_KEY, "light", type=str)
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H2",
-            message="MainWindow.__init__ entered",
-            data={},
-        )
-        # endregion
+        global _current_theme
+        _current_theme = self._theme
         self.setWindowTitle("ЛТО — Складской учёт")
         logo_path = _logo_path()
         if logo_path:
@@ -2119,8 +2593,7 @@ class MainWindow(QMainWindow):
 
         _script_dir = os.path.dirname(os.path.abspath(__file__))
         db_path = os.path.join(_script_dir, DB_NAME)
-        if logger:
-            logger.info("Using database: %s (exists: %s)", db_path, os.path.exists(db_path))
+        logger.info("Using database: %s (exists: %s)", db_path, os.path.exists(db_path))
         self.db = DatabaseManager(db_path)
 
         self._build_ui()
@@ -2140,7 +2613,7 @@ class MainWindow(QMainWindow):
                 size = int(size) if not isinstance(size, int) else size
             except (TypeError, ValueError):
                 size = 18
-            icon = _icon_from_file_light(name, size) if is_dark else _icon_from_file(name, size)
+            icon = _icon_from_file(name, size, tint="#EEEEEE") if is_dark else _icon_from_file(name, size)
             btn.setIcon(icon)
 
     def _apply_nav_icons(self):
@@ -2148,6 +2621,7 @@ class MainWindow(QMainWindow):
         self.btn_stock.setIcon(self._nav_icon("ph-warehouse-light"))
         self.btn_journal.setIcon(self._nav_icon("ph-squares-four-light"))
         self.btn_conduct.setIcon(self._nav_icon("ph-arrows-left-right-light"))
+        self.btn_work_orders.setIcon(self._nav_icon("certificate"))
         self.btn_nomenclature.setIcon(self._nav_icon("book-bookmark"))
         self.btn_units.setIcon(self._nav_icon("ph-buildings-light"))
 
@@ -2210,14 +2684,6 @@ class MainWindow(QMainWindow):
         return icon
 
     def _build_ui(self):
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H2",
-            message="MainWindow._build_ui entered",
-            data={},
-        )
-        # endregion
-
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QHBoxLayout(central)
@@ -2247,10 +2713,8 @@ class MainWindow(QMainWindow):
         logo_path = _logo_path()
         if logo_path:
             logo_badge.setText("")
-            _dpr = _device_pixel_ratio()
-            _logo_size = int(round(44 * _dpr))
-            _logo_pix = QIcon(logo_path).pixmap(QSize(_logo_size, _logo_size))
-            _logo_pix.setDevicePixelRatio(_dpr)
+            # QIcon.pixmap expects logical size; multiplying by DPR clips image in fixed 44x44 label.
+            _logo_pix = QIcon(logo_path).pixmap(QSize(44, 44))
             logo_badge.setPixmap(_logo_pix)
 
         app_name = QLabel("Склад · ЛТО")
@@ -2282,7 +2746,6 @@ class MainWindow(QMainWindow):
 
         self.btn_stock = _NavBtn("Остатки на складе", "NavButton")
         self.btn_stock.setIcon(self._nav_icon("ph-warehouse-light"))
-        self.btn_stock.setFixedHeight(44)
         nav_layout.addWidget(self.btn_stock)
 
         nav_layout.addSpacing(8)
@@ -2294,13 +2757,15 @@ class MainWindow(QMainWindow):
 
         self.btn_journal = _NavBtn("Журнал операций", "NavButton")
         self.btn_journal.setIcon(self._nav_icon("ph-squares-four-light"))
-        self.btn_journal.setFixedHeight(44)
         nav_layout.addWidget(self.btn_journal)
 
         self.btn_conduct = _NavBtn("Проведение", "NavButton")
         self.btn_conduct.setIcon(self._nav_icon("ph-arrows-left-right-light"))
-        self.btn_conduct.setFixedHeight(44)
         nav_layout.addWidget(self.btn_conduct)
+
+        self.btn_work_orders = _NavBtn("Наряды", "NavButton")
+        self.btn_work_orders.setIcon(self._nav_icon("certificate"))
+        nav_layout.addWidget(self.btn_work_orders)
 
         nav_layout.addSpacing(8)
 
@@ -2311,12 +2776,10 @@ class MainWindow(QMainWindow):
 
         self.btn_nomenclature = _NavBtn("Номенклатор", "NavButton")
         self.btn_nomenclature.setIcon(self._nav_icon("book-bookmark"))
-        self.btn_nomenclature.setFixedHeight(44)
         nav_layout.addWidget(self.btn_nomenclature)
 
         self.btn_units = _NavBtn("Подразделения", "NavButton")
         self.btn_units.setIcon(self._nav_icon("ph-buildings-light"))
-        self.btn_units.setFixedHeight(44)
         nav_layout.addWidget(self.btn_units)
 
         nav_layout.addSpacing(8)
@@ -2378,19 +2841,26 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().hide()
 
         self.nomenclature_tab = NomenclatureTab(self.db, self)
-        self.journal_tab = JournalTab(self.db, self)
         self.stock_tab = StockTab(self.db, self)
+        self.journal_tab = JournalTab(
+            self.db,
+            on_data_changed=lambda: (self.stock_tab.reload(), self.work_orders_tab.reload() if hasattr(self, 'work_orders_tab') else None),
+            parent=self,
+        )
         self.operations_tab = OperationsTab(
             self.db,
             stock_tab_updater=self.stock_tab.reload,
             refresh_journal=self.journal_tab.load_journal,
+            refresh_work_orders=lambda: self.work_orders_tab.reload(),
             parent=self,
         )
+        self.work_orders_tab = WorkOrdersTab(self.db, self)
         self.units_tab = UnitsTab(
             self.db,
             units_changed_callback=lambda: (
                 self.operations_tab.load_units(),
                 self.journal_tab.load_units(),
+                self.work_orders_tab.reload(),
             ),
             parent=self,
         )
@@ -2398,6 +2868,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.stock_tab, "Склад")
         self.tabs.addTab(self.journal_tab, "Журнал операций")
         self.tabs.addTab(self.operations_tab, "Проведение операций")
+        self.tabs.addTab(self.work_orders_tab, "Наряды")
         self.tabs.addTab(self.nomenclature_tab, "Номенклатура")
         self.tabs.addTab(self.units_tab, "Подразделения")
 
@@ -2410,8 +2881,9 @@ class MainWindow(QMainWindow):
         self.btn_stock.clicked.connect(lambda: self._switch_page(0, self.btn_stock, "Остатки на складе", "Склад / Остатки"))
         self.btn_journal.clicked.connect(lambda: self._switch_page(1, self.btn_journal, "Журнал операций", "Операции / Журнал"))
         self.btn_conduct.clicked.connect(lambda: self._switch_page(2, self.btn_conduct, "Проведение операций", "Операции / Провести"))
-        self.btn_nomenclature.clicked.connect(lambda: self._switch_page(3, self.btn_nomenclature, "Номенклатор", "Справочники / Номенклатура"))
-        self.btn_units.clicked.connect(lambda: self._switch_page(4, self.btn_units, "Подразделения", "Справочники / Подразделения"))
+        self.btn_work_orders.clicked.connect(lambda: self._switch_page(3, self.btn_work_orders, "Наряды", "Операции / Наряды"))
+        self.btn_nomenclature.clicked.connect(lambda: self._switch_page(4, self.btn_nomenclature, "Номенклатор", "Справочники / Номенклатура"))
+        self.btn_units.clicked.connect(lambda: self._switch_page(5, self.btn_units, "Подразделения", "Справочники / Подразделения"))
 
         self._switch_page(0, self.btn_stock, "Остатки на складе", "Склад / Остатки")
 
@@ -2422,11 +2894,13 @@ class MainWindow(QMainWindow):
             self.page_title.setText(title)
         if breadcrumb:
             self.page_breadcrumb.setText(breadcrumb)
-        for btn in (self.btn_stock, self.btn_journal, self.btn_conduct,
+        for btn in (self.btn_stock, self.btn_journal, self.btn_conduct, self.btn_work_orders,
                     self.btn_nomenclature, self.btn_units):
             btn.setChecked(btn is active_btn)
         # При открытии вкладки «Номенклатор» обновляем данные из БД
         if index == 3:
+            self.work_orders_tab.reload()
+        if index == 4:
             self.nomenclature_tab.reload()
 
     def _update_theme_button(self):
@@ -2442,6 +2916,8 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         """Переключает тему и сохраняет выбор."""
         self._theme = "dark" if self._theme == "light" else "light"
+        global _current_theme
+        _current_theme = self._theme
         QSettings("LTO2", "App").setValue(THEME_SETTINGS_KEY, self._theme)
         qss = _load_stylesheet(self._theme)
         if qss:
@@ -2449,46 +2925,31 @@ class MainWindow(QMainWindow):
         self._update_theme_button()
         self._apply_export_icons()
         self._apply_nav_icons()
+        self.stock_tab.reload()
+        self.work_orders_tab.reload()
+        self.journal_tab.load_journal()
 
 
 def main():
-    global logger
-    logger = _setup_logging()
-    database.logger = logger
+    _setup_logging()
 
     app = QApplication(sys.argv)
 
-    # ── Шрифт Inter ───────────────────────────────────────────────────────────
     _font_family = "Inter"
     _fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-    _font_files = [
-        "Inter-Regular.ttf",
-        "Inter-Medium.ttf",
-        "Inter-SemiBold.ttf",
-        "Inter-Bold.ttf",
-    ]
-    for _fname in _font_files:
+    for _fname in ("Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf", "Inter-Bold.ttf"):
         _fpath = os.path.join(_fonts_dir, _fname)
         if os.path.exists(_fpath):
             QFontDatabase.addApplicationFont(_fpath)
-    _base_font = QFont(_font_family, 10)
-    app.setFont(_base_font)
+    app.setFont(QFont(_font_family, 10))
 
-    # ── Стили приложения ─────────────────────────────────────────────────────
     _theme = QSettings("LTO2", "App").value(THEME_SETTINGS_KEY, "light", type=str)
     _qss = _load_stylesheet(_theme)
     if _qss:
-        app.setStyle("Fusion")  # чтобы QSS для QDateEdit::down-button применялся без нативной рамки
+        app.setStyle("Fusion")
         app.setStyleSheet(_qss)
 
     window = MainWindow(app)
-    # region agent log
-    _agent_debug_log(
-        hypothesis_id="H2",
-        message="Main window created",
-        data={},
-    )
-    # endregion
     window.show()
     sys.exit(app.exec())
 
