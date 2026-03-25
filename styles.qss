@@ -48,8 +48,7 @@ QLabel#NavSection {
     background-color: transparent;
 }
 
-QPushButton#NavButton,
-QPushButton#NavParent {
+QPushButton#NavButton {
     background: transparent;
     border: none;
     border-radius: 8px;
@@ -61,31 +60,12 @@ QPushButton#NavParent {
     padding-right: 12px;
 }
 
-QPushButton#NavParent {
-    font-weight: 400;
-}
-
-QPushButton#NavChild {
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    color: #6B778C;
-    font-size: 14px;
-    text-align: left;
-    padding-left: 40px;
-    padding-right: 12px;
-}
-
-QPushButton#NavButton:hover,
-QPushButton#NavParent:hover,
-QPushButton#NavChild:hover {
+QPushButton#NavButton:hover {
     background: #E8EAED;
     color: #172B4D;
 }
 
-QPushButton#NavButton:checked,
-QPushButton#NavParent:checked,
-QPushButton#NavChild:checked {
+QPushButton#NavButton:checked {
     background: #DEEBFF;
     color: #0052CC;
     font-weight: 500;
@@ -313,6 +293,8 @@ QPushButton#ExportBtn:pressed {
 
 QPushButton#GhostButton {
     background-color: transparent;
+    border: none;
+    outline: none;
     padding: 4px;
 }
 QPushButton#GhostButton:hover {
@@ -379,78 +361,103 @@ QListWidget::item:hover {
     background-color: #F4F5F7;
 }
 
-/* ─ TABLE ────────────────────────────────────────────────────────── */
-QTableWidget {
+/* ─ TABLE (Fluent, objectName DataTable — см. _apply_data_table_style в main.py) ─ */
+QTableWidget#DataTable {
     background-color: #FFFFFF;
-    border: 1px solid #DFE1E6;
+    alternate-background-color: #FAFAFA;
+    border: 1px solid #E1DFDD;
     border-radius: 8px;
-    gridline-color: #F4F5F7;
+    gridline-color: transparent;
     outline: none;
-    color: #172B4D;
+    color: #323130;
 }
 
-QTableWidget::item {
-    padding: 6px 8px;
-    border-bottom: 1px solid #F4F5F7;
-    color: #172B4D;
-}
-
-QTableWidget::item:selected {
-    background-color: #DEEBFF;
-    color: #172B4D;
-}
-
-QTableWidget::item:hover {
-    background-color: #F4F5F7;
-}
-
-QHeaderView::section {
-    background-color: #F4F5F7;
+QTableWidget#DataTable::item {
+    padding: 8px 12px;
     border: none;
-    border-bottom: 2px solid #DFE1E6;
-    border-right: 1px solid #DFE1E6;
-    padding: 8px 8px;
+    border-bottom: 1px solid #EDEBE9;
+}
+
+QTableWidget#DataTable::item:selected {
+    background-color: #E8F3FC;
+    color: #201F1E;
+}
+
+QTableWidget#DataTable::item:hover:!selected {
+    background-color: #F3F2F1;
+}
+
+QTableWidget#DataTable QHeaderView::section {
+    background-color: #F3F2F1;
+    color: #605E5C;
+    padding: 10px 12px;
+    border: none;
+    border-bottom: 1px solid #E1DFDD;
+    border-right: 1px solid #E1DFDD;
     font-weight: 600;
     font-size: 11px;
-    color: #6B778C;
-    text-transform: uppercase;
 }
 
-/* ─ TREE ─────────────────────────────────────────────────────────── */
-QTreeWidget {
+QTableWidget#DataTable QHeaderView::section:last {
+    border-right: none;
+}
+
+QTableWidget#DataTable QTableCornerButton::section {
+    background-color: #F3F2F1;
+    border: none;
+    border-bottom: 1px solid #E1DFDD;
+}
+
+/* ─ TREE (Fluent, objectName DataTree — остатки, номенклатура) ─ */
+QTreeWidget#DataTree {
     background-color: #FFFFFF;
-    border: 1px solid #DFE1E6;
+    alternate-background-color: #FAFAFA;
+    border: 1px solid #E1DFDD;
     border-radius: 8px;
-    gridline-color: #F4F5F7;
     outline: none;
-    color: #172B4D;
+    color: #323130;
 }
 
-QTreeView::item {
-    padding: 6px 8px;
-    border-bottom: 1px solid #F4F5F7;
-    color: #172B4D;
+QTreeWidget#DataTree::item {
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 1px solid #EDEBE9;
     min-height: 0;
 }
 
-QTreeView::item:focus {
+QTreeWidget#DataTree::item:focus {
     outline: none;
     border: none;
-    border-bottom: 1px solid #F4F5F7;
+    border-bottom: 1px solid #EDEBE9;
 }
 
-QTreeView::item:selected {
-    background-color: #DEEBFF;
-    color: #172B4D;
+QTreeWidget#DataTree::item:selected {
+    background-color: #E8F3FC;
+    color: #201F1E;
 }
 
-QTreeView::item:hover {
-    background-color: #F4F5F7;
+QTreeWidget#DataTree::item:hover:!selected {
+    background-color: #F3F2F1;
 }
 
-QTreeView::branch {
+QTreeWidget#DataTree::branch {
     background-color: #FFFFFF;
-    border-bottom: 1px solid #F4F5F7;
+    border-bottom: 1px solid #EDEBE9;
+}
+
+QTreeWidget#DataTree QHeaderView::section {
+    background-color: #F3F2F1;
+    color: #605E5C;
+    padding: 10px 12px;
+    border: none;
+    border-bottom: 1px solid #E1DFDD;
+    border-right: 1px solid #E1DFDD;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+QTreeWidget#DataTree QHeaderView::section:last {
+    border-right: none;
 }
 
 /* ─ SCROLLBAR ────────────────────────────────────────────────────── */

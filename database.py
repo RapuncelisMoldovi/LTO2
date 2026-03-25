@@ -14,9 +14,22 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.path)
             self.conn.row_factory = sqlite3.Row
             self._init_db()
+            self.conn.execute("PRAGMA foreign_keys = ON")
         except Exception as e:
             logger.exception("Database init failed: %s", e)
             raise
+
+    def close(self):
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     def _init_db(self):
         cur = self.conn.cursor()
@@ -61,7 +74,7 @@ class DatabaseManager:
             """
             CREATE TABLE IF NOT EXISTS stock_qty (
                 variant_id INTEGER PRIMARY KEY REFERENCES variants(id) ON DELETE CASCADE,
-                quantity INTEGER NOT NULL DEFAULT 0
+                quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0)
             )
             """
         )
@@ -165,13 +178,7 @@ class DatabaseManager:
             cur.execute("ALTER TABLE journal ADD COLUMN work_order_id INTEGER REFERENCES work_orders(id)")
         self.conn.commit()
 
-        cur.execute("DROP TABLE IF EXISTS categories")
-        self.conn.commit()
-
         # Миграция: переименование статусов work_orders (ж → м род)
-        cur.execute("PRAGMA table_info(work_orders)")
-        wo_cols_info = cur.fetchall()
-        old_check = any("реализована" in (str(c[1]) + str(c[4] or "")) for c in wo_cols_info)
         cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_orders'")
         create_sql = (cur.fetchone() or [None])[0] or ""
         if "реализована" in create_sql:
@@ -204,6 +211,22 @@ class DatabaseManager:
             cur.execute("DROP TABLE _work_orders_old")
             self.conn.commit()
 
+        # Repair: if a previous run had PRAGMA foreign_keys=ON during the RENAME
+        # migration above, SQLite rewrote FK references in child tables to point
+        # at _work_orders_old. Fix them by recreating the affected tables.
+        for tbl in ("journal", "work_order_items"):
+            row = cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+            ).fetchone()
+            if row and row[0] and "_work_orders_old" in row[0]:
+                logger.warning("Repairing corrupted FK in table %s", tbl)
+                cur.execute(f"ALTER TABLE {tbl} RENAME TO _{tbl}_repair")
+                fixed_sql = row[0].replace("_work_orders_old", "work_orders")
+                cur.execute(fixed_sql)
+                cur.execute(f"INSERT INTO {tbl} SELECT * FROM _{tbl}_repair")
+                cur.execute(f"DROP TABLE _{tbl}_repair")
+                self.conn.commit()
+
         self._ensure_indices()
         logger.info("Database initialized: %s", self.path)
 
@@ -232,15 +255,20 @@ class DatabaseManager:
         return cur.fetchall()
 
     def add_item(self, name: str, base_code: str, uom: str, item_type: str):
-        cur = self.conn.cursor()
-        cur.execute(
-            "INSERT INTO items(name, base_code, uom, type) VALUES (?, ?, ?, ?)",
-            (name.strip(), base_code.strip(), uom.strip(), item_type),
-        )
-        iid = cur.lastrowid
-        self.conn.commit()
-        self._audit("ITEM_INSERT", "items", iid, f"name={name.strip()} base_code={base_code.strip()}")
-        return iid
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute(
+                "INSERT INTO items(name, base_code, uom, type) VALUES (?, ?, ?, ?)",
+                (name.strip(), base_code.strip(), uom.strip(), item_type),
+            )
+            iid = cur.lastrowid
+            self._audit("ITEM_INSERT", "items", iid, f"name={name.strip()} base_code={base_code.strip()}", commit=False)
+            self.conn.commit()
+            return iid
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_variants_for_item(self, item_id: int):
         cur = self.conn.cursor()
@@ -261,20 +289,25 @@ class DatabaseManager:
         return cur.fetchone()
 
     def add_variant(self, item_id: int, size_name: str, full_code: str, item_type: str):
-        cur = self.conn.cursor()
-        cur.execute(
-            "INSERT INTO variants(item_id, size_name, full_code) VALUES (?, ?, ?)",
-            (item_id, size_name.strip(), full_code.strip()),
-        )
-        variant_id = cur.lastrowid
-        if item_type == "qty":
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
             cur.execute(
-                "INSERT OR IGNORE INTO stock_qty(variant_id, quantity) VALUES (?, 0)",
-                (variant_id,),
+                "INSERT INTO variants(item_id, size_name, full_code) VALUES (?, ?, ?)",
+                (item_id, size_name.strip(), full_code.strip()),
             )
-        self.conn.commit()
-        self._audit("VARIANT_INSERT", "variants", variant_id, f"item_id={item_id} size={size_name.strip()} full_code={full_code.strip()}")
-        return variant_id
+            variant_id = cur.lastrowid
+            if item_type == "qty":
+                cur.execute(
+                    "INSERT OR IGNORE INTO stock_qty(variant_id, quantity) VALUES (?, 0)",
+                    (variant_id,),
+                )
+            self._audit("VARIANT_INSERT", "variants", variant_id, f"item_id={item_id} size={size_name.strip()} full_code={full_code.strip()}", commit=False)
+            self.conn.commit()
+            return variant_id
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # Во второй колонке Excel: строка с одним из этих значений задаёт базовый н/н изделия (колонка C); остальные строки с тем же наименованием — размеры.
     EXCEL_BASE_ROW_MARKERS = ("н/н (базовый)", "Без размера")
@@ -390,22 +423,32 @@ class DatabaseManager:
         return items_added, variants_added, errors
 
     def update_item(self, item_id: int, name: str, base_code: str, uom: str, item_type: str):
-        cur = self.conn.cursor()
-        cur.execute(
-            "UPDATE items SET name = ?, base_code = ?, uom = ?, type = ? WHERE id = ?",
-            (name.strip(), base_code.strip(), uom.strip(), item_type, item_id),
-        )
-        self.conn.commit()
-        self._audit("ITEM_UPDATE", "items", item_id, f"name={name.strip()} base_code={base_code.strip()}")
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute(
+                "UPDATE items SET name = ?, base_code = ?, uom = ?, type = ? WHERE id = ?",
+                (name.strip(), base_code.strip(), uom.strip(), item_type, item_id),
+            )
+            self._audit("ITEM_UPDATE", "items", item_id, f"name={name.strip()} base_code={base_code.strip()}", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def update_variant(self, variant_id: int, size_name: str, full_code: str):
-        cur = self.conn.cursor()
-        cur.execute(
-            "UPDATE variants SET size_name = ?, full_code = ? WHERE id = ?",
-            (size_name.strip(), full_code.strip(), variant_id),
-        )
-        self.conn.commit()
-        self._audit("VARIANT_UPDATE", "variants", variant_id, f"size={size_name.strip()} full_code={full_code.strip()}")
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute(
+                "UPDATE variants SET size_name = ?, full_code = ? WHERE id = ?",
+                (size_name.strip(), full_code.strip(), variant_id),
+            )
+            self._audit("VARIANT_UPDATE", "variants", variant_id, f"size={size_name.strip()} full_code={full_code.strip()}", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # --- Units ---
 
@@ -415,18 +458,28 @@ class DatabaseManager:
         return cur.fetchall()
 
     def add_unit(self, name: str):
-        cur = self.conn.cursor()
-        cur.execute("INSERT INTO units(name) VALUES (?)", (name.strip(),))
-        uid = cur.lastrowid
-        self.conn.commit()
-        self._audit("UNIT_INSERT", "units", uid, f"name={name.strip()}")
-        return uid
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute("INSERT INTO units(name) VALUES (?)", (name.strip(),))
+            uid = cur.lastrowid
+            self._audit("UNIT_INSERT", "units", uid, f"name={name.strip()}", commit=False)
+            self.conn.commit()
+            return uid
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def delete_unit(self, unit_id: int):
-        cur = self.conn.cursor()
-        cur.execute("DELETE FROM units WHERE id = ?", (unit_id,))
-        self.conn.commit()
-        self._audit("UNIT_DELETE", "units", unit_id, "")
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM units WHERE id = ?", (unit_id,))
+            self._audit("UNIT_DELETE", "units", unit_id, "", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def has_journal_entries_for_item(self, item_id: int) -> bool:
         cur = self.conn.cursor()
@@ -450,27 +503,38 @@ class DatabaseManager:
 
     def delete_item(self, item_id: int):
         """Удаляет изделие и все связанные варианты, остатки и записи журнала."""
-        cur = self.conn.cursor()
-        cur.execute("SELECT id FROM variants WHERE item_id = ?", (item_id,))
-        variant_ids = [r["id"] for r in cur.fetchall()]
-        for vid in variant_ids:
-            cur.execute("DELETE FROM journal WHERE variant_id = ?", (vid,))
-            cur.execute("DELETE FROM stock_qty WHERE variant_id = ?", (vid,))
-            cur.execute("DELETE FROM stock_serial WHERE variant_id = ?", (vid,))
-        cur.execute("DELETE FROM variants WHERE item_id = ?", (item_id,))
-        cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
-        self.conn.commit()
-        self._audit("ITEM_DELETE", "items", item_id, f"variants={variant_ids}")
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute("SELECT id FROM variants WHERE item_id = ?", (item_id,))
+            variant_ids = [r["id"] for r in cur.fetchall()]
+            if variant_ids:
+                placeholders = ",".join("?" * len(variant_ids))
+                cur.execute(f"DELETE FROM journal WHERE variant_id IN ({placeholders})", variant_ids)
+                cur.execute(f"DELETE FROM stock_qty WHERE variant_id IN ({placeholders})", variant_ids)
+                cur.execute(f"DELETE FROM stock_serial WHERE variant_id IN ({placeholders})", variant_ids)
+            cur.execute("DELETE FROM variants WHERE item_id = ?", (item_id,))
+            cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
+            self._audit("ITEM_DELETE", "items", item_id, f"variants={variant_ids}", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def delete_variant(self, variant_id: int):
         """Удаляет вариант (размер) и все связанные остатки и записи журнала."""
-        cur = self.conn.cursor()
-        cur.execute("DELETE FROM journal WHERE variant_id = ?", (variant_id,))
-        cur.execute("DELETE FROM stock_qty WHERE variant_id = ?", (variant_id,))
-        cur.execute("DELETE FROM stock_serial WHERE variant_id = ?", (variant_id,))
-        cur.execute("DELETE FROM variants WHERE id = ?", (variant_id,))
-        self.conn.commit()
-        self._audit("VARIANT_DELETE", "variants", variant_id, "")
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM journal WHERE variant_id = ?", (variant_id,))
+            cur.execute("DELETE FROM stock_qty WHERE variant_id = ?", (variant_id,))
+            cur.execute("DELETE FROM stock_serial WHERE variant_id = ?", (variant_id,))
+            cur.execute("DELETE FROM variants WHERE id = ?", (variant_id,))
+            self._audit("VARIANT_DELETE", "variants", variant_id, "", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_or_create_unit(self, name: str | None):
         if not name:
@@ -535,10 +599,6 @@ class DatabaseManager:
 
     def get_work_orders(self, search_text: str = ""):
         cur = self.conn.cursor()
-        cur.execute("SELECT id FROM work_orders")
-        for row in cur.fetchall():
-            self.recompute_work_order_status(row["id"])
-
         pattern = f"%{search_text.strip()}%"
         cur.execute(
             """
@@ -572,17 +632,22 @@ class DatabaseManager:
     ) -> int:
         cur = self.conn.cursor()
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute(
-            """
-            INSERT INTO work_orders(created_at, order_no, unit_id, description, status)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (created_at, order_no.strip(), unit_id, description.strip(), status),
-        )
-        wid = cur.lastrowid
-        self.conn.commit()
-        self._audit("WORK_ORDER_INSERT", "work_orders", wid, f"order_no={order_no.strip()} status={status}")
-        return wid
+        try:
+            self.conn.execute("BEGIN")
+            cur.execute(
+                """
+                INSERT INTO work_orders(created_at, order_no, unit_id, description, status)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (created_at, order_no.strip(), unit_id, description.strip(), status),
+            )
+            wid = cur.lastrowid
+            self._audit("WORK_ORDER_INSERT", "work_orders", wid, f"order_no={order_no.strip()} status={status}", commit=False)
+            self.conn.commit()
+            return wid
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def update_work_order(
         self,
@@ -593,23 +658,33 @@ class DatabaseManager:
         status: str,
     ):
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            UPDATE work_orders
-            SET order_no = ?, unit_id = ?, description = ?, status = ?
-            WHERE id = ?
-            """,
-            (order_no.strip(), unit_id, description.strip(), status, work_order_id),
-        )
-        self.conn.commit()
-        self._audit("WORK_ORDER_UPDATE", "work_orders", work_order_id, f"order_no={order_no.strip()} status={status}")
+        try:
+            self.conn.execute("BEGIN")
+            cur.execute(
+                """
+                UPDATE work_orders
+                SET order_no = ?, unit_id = ?, description = ?, status = ?
+                WHERE id = ?
+                """,
+                (order_no.strip(), unit_id, description.strip(), status, work_order_id),
+            )
+            self._audit("WORK_ORDER_UPDATE", "work_orders", work_order_id, f"order_no={order_no.strip()} status={status}", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def delete_work_order(self, work_order_id: int):
-        cur = self.conn.cursor()
-        cur.execute("DELETE FROM work_order_items WHERE work_order_id = ?", (work_order_id,))
-        cur.execute("DELETE FROM work_orders WHERE id = ?", (work_order_id,))
-        self.conn.commit()
-        self._audit("WORK_ORDER_DELETE", "work_orders", work_order_id, "")
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM work_order_items WHERE work_order_id = ?", (work_order_id,))
+            cur.execute("DELETE FROM work_orders WHERE id = ?", (work_order_id,))
+            self._audit("WORK_ORDER_DELETE", "work_orders", work_order_id, "", commit=False)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_work_order_items(self, work_order_id: int):
         cur = self.conn.cursor()
@@ -951,6 +1026,8 @@ class DatabaseManager:
                     if op == "IN":
                         self.remove_serial(vid, sn, commit=False)
                     else:
+                        if self.serial_exists_for_variant(vid, sn):
+                            raise ValueError(f"S/N «{sn}» уже на складе — возможно, операция уже была отменена")
                         self.add_serial(vid, sn, commit=False)
 
                 self.conn.execute("DELETE FROM journal WHERE id = ?", (jid,))
