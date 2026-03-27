@@ -43,6 +43,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QButtonGroup,
+    QCalendarWidget,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -55,6 +56,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QSizePolicy,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -188,6 +190,20 @@ def _patch_calendar_arrows(date_edit) -> None:
             btn.setIconSize(QSize(w, h))
 
 
+def _create_standard_fluent_date_edit(parent: QWidget | None, default_date: QDate) -> DateEdit:
+    """Стандартный qfluentwidgets DateEdit: поле даты + всплывающий календарь (без стрелок ± по полям)."""
+    w = DateEdit(parent)
+    w.setCalendarPopup(True)
+    w.setDisplayFormat("dd.MM.yyyy")
+    w.setDate(default_date)
+    w.setSymbolVisible(False)
+    w.setFixedWidth(152)
+    if w.calendarWidget() is None:
+        w.setCalendarWidget(QCalendarWidget(w))
+    _patch_calendar_arrows(w)
+    return w
+
+
 class GhostButton(TransparentPushButton):
     """Кнопка без заливки и обводки, только иконка (Fluent TransparentPushButton)."""
 
@@ -302,6 +318,26 @@ def _size_display(size_name: str | None) -> str:
 def _is_no_size(size_name: str | None) -> bool:
     """Вариант без размера (UNI или «Без размера»)."""
     return (size_name or "").strip().upper() in ("UNI", "БЕЗ РАЗМЕРА")
+
+
+def _format_db_date_iso_to_display(iso: str | None) -> str:
+    """Дата журнала TEXT (yyyy-MM-dd) → dd.MM.yyyy для отображения."""
+    if not iso:
+        return ""
+    s = str(iso).strip()[:10]
+    d = QDate.fromString(s, Qt.DateFormat.ISODate)
+    return d.toString("dd.MM.yyyy") if d.isValid() else s
+
+
+def _format_work_order_doc_period(first_iso: str | None, last_iso: str | None) -> str:
+    """Период выдачи по одному номеру документа (одна дата или «с — по»)."""
+    a = _format_db_date_iso_to_display(first_iso)
+    b = _format_db_date_iso_to_display(last_iso)
+    if not a:
+        return b
+    if not b or a == b:
+        return a
+    return f"{a} — {b}"
 
 
 class NewItemDialog(QDialog):
@@ -719,9 +755,18 @@ class OperationDetailDialog(QDialog):
         self.db = db
         self.was_reversed = False
         self.setObjectName("OperationDetailDialog")
-        op_type  = "ПРИХОД" if op_data["op_type"] == "IN" else "ВЫДАЧА"
-        self.setWindowTitle(f"Документ № {op_data['doc_name']}")
-        self.setMinimumWidth(640)
+        op_type = "ПРИХОД" if op_data["op_type"] == "IN" else "ВЫДАЧА"
+        _doc = (op_data.get("doc_name") or "").strip()
+        _wo = (op_data.get("work_order_no") or "").strip()
+        if _doc and _wo:
+            self.setWindowTitle(f"Документ № {_doc} · наряд {_wo}")
+        elif _doc:
+            self.setWindowTitle(f"Документ № {_doc}")
+        elif _wo:
+            self.setWindowTitle(f"Наряд {_wo}")
+        else:
+            self.setWindowTitle("Операция")
+        self.setMinimumWidth(720)
         self.setMinimumHeight(400)
 
         layout = QVBoxLayout(self)
@@ -746,14 +791,16 @@ class OperationDetailDialog(QDialog):
             l.setObjectName("OpDetailVal")
             return l
 
-        hf_layout.addWidget(_lbl_key("ДОКУМЕНТ"),       0, 0)
-        hf_layout.addWidget(_lbl_val(op_data["doc_name"]), 1, 0)
-        hf_layout.addWidget(_lbl_key("ОПЕРАЦИЯ"),       0, 1)
-        hf_layout.addWidget(_lbl_val(op_type),          1, 1)
-        hf_layout.addWidget(_lbl_key("ДАТА"),           0, 2)
-        hf_layout.addWidget(_lbl_val(op_data["date"]),  1, 2)
-        hf_layout.addWidget(_lbl_key("ПОДРАЗДЕЛЕНИЕ"),  0, 3)
-        hf_layout.addWidget(_lbl_val(op_data["unit_name"] or "—"), 1, 3)
+        hf_layout.addWidget(_lbl_key("ДОКУМЕНТ"), 0, 0)
+        hf_layout.addWidget(_lbl_val(_doc or "—"), 1, 0)
+        hf_layout.addWidget(_lbl_key("НАРЯД"), 0, 1)
+        hf_layout.addWidget(_lbl_val(_wo or "—"), 1, 1)
+        hf_layout.addWidget(_lbl_key("ОПЕРАЦИЯ"), 0, 2)
+        hf_layout.addWidget(_lbl_val(op_type), 1, 2)
+        hf_layout.addWidget(_lbl_key("ДАТА"), 0, 3)
+        hf_layout.addWidget(_lbl_val(op_data["date"]), 1, 3)
+        hf_layout.addWidget(_lbl_key("ПОДРАЗДЕЛЕНИЕ"), 0, 4)
+        hf_layout.addWidget(_lbl_val(op_data["unit_name"] or "—"), 1, 4)
         layout.addWidget(header_frame)
 
         pos_label = QLabel(f"Позиции ({len(op_data['rows'])}):")
@@ -797,10 +844,12 @@ class OperationDetailDialog(QDialog):
         op = self._op_data
         n = len(op["rows"])
         op_label = "ПРИХОД" if op["op_type"] == "IN" else "ВЫДАЧА"
+        wo = (op.get("work_order_no") or "").strip()
+        wo_part = f", наряд «{wo}»" if wo else ""
         reply = QMessageBox.warning(
             self,
             "Отмена операции",
-            f"Отменить операцию {op_label} (документ «{op['doc_name']}», {n} поз.)?\n\n"
+            f"Отменить операцию {op_label} (документ «{op['doc_name'] or '—'}»{wo_part}, {n} поз.)?\n\n"
             "Все позиции будут возвращены на склад (или списаны, если это был приход). "
             "Действие необратимо.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -846,20 +895,12 @@ class JournalTab(QWidget):
 
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("Дата с:"))
-        self.date_from_edit = DateEdit()
-        self.date_from_edit.setCalendarPopup(True)
-        self.date_from_edit.setDisplayFormat("dd.MM.yyyy")
-        self.date_from_edit.setDate(QDate.currentDate().addMonths(-1))
-        self.date_from_edit.setFixedWidth(120)
-        _patch_calendar_arrows(self.date_from_edit)
+        self.date_from_edit = _create_standard_fluent_date_edit(
+            self, QDate.currentDate().addMonths(-1)
+        )
         filter_layout.addWidget(self.date_from_edit)
         filter_layout.addWidget(QLabel("по:"))
-        self.date_to_edit = DateEdit()
-        self.date_to_edit.setCalendarPopup(True)
-        self.date_to_edit.setDisplayFormat("dd.MM.yyyy")
-        self.date_to_edit.setDate(QDate.currentDate())
-        self.date_to_edit.setFixedWidth(120)
-        _patch_calendar_arrows(self.date_to_edit)
+        self.date_to_edit = _create_standard_fluent_date_edit(self, QDate.currentDate())
         filter_layout.addWidget(self.date_to_edit)
         filter_layout.addWidget(QLabel("Подразделение:"))
         self.filter_unit_combo = ComboBox()
@@ -877,15 +918,17 @@ class JournalTab(QWidget):
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Поиск:"))
         self.journal_search_edit = LineEdit()
-        self.journal_search_edit.setPlaceholderText("Документ, дата или наименование имущества\u2026")
+        self.journal_search_edit.setPlaceholderText(
+            "Документ, наряд, дата или наименование имущества\u2026"
+        )
         self.journal_search_edit.textChanged.connect(lambda _: self._search_timer.start())
         search_layout.addWidget(self.journal_search_edit)
         main_layout.addLayout(search_layout)
 
         # Плоская таблица — одна строка на операцию
-        self.journal_table = _create_fluent_table(self, 5)
+        self.journal_table = _create_fluent_table(self, 6)
         self.journal_table.setHorizontalHeaderLabels(
-            ["Дата", "Операция", "Документ", "Позиций", "Подразделение"]
+            ["Дата", "Операция", "Документ", "Наряд", "Позиций", "Подразделение"]
         )
         hh = self.journal_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -893,6 +936,7 @@ class JournalTab(QWidget):
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.journal_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.journal_table.cellDoubleClicked.connect(self._on_row_double_click)
         main_layout.addWidget(self.journal_table, 1)
@@ -934,7 +978,21 @@ class JournalTab(QWidget):
                     "op_type":   row["op_type"],
                     "unit_name": row["unit_name"] or "",
                     "rows":      [],
+                    "work_order_no": None,
                 }
+            wn = (row["work_order_no"] or "").strip()
+            if wn:
+                cur_wo = groups[key]["work_order_no"]
+                if cur_wo is None:
+                    groups[key]["work_order_no"] = wn
+                elif cur_wo != wn:
+                    logger.warning(
+                        "Журнал: в одной операции разные наряды (документ %s, дата %s): %r и %r",
+                        row["doc_name"] or "",
+                        date_only,
+                        cur_wo,
+                        wn,
+                    )
             groups[key]["rows"].append(row)
 
         self._ops = list(groups.values())
@@ -942,12 +1000,14 @@ class JournalTab(QWidget):
 
         for i, op in enumerate(self._ops):
             op_text = "Приход" if op["op_type"] == "IN" else "Выдача"
+            wo = (op.get("work_order_no") or "").strip()
             self.journal_table.insertRow(i)
             self.journal_table.setItem(i, 0, QTableWidgetItem(op["date"]))
             self.journal_table.setItem(i, 1, QTableWidgetItem(op_text))
-            self.journal_table.setItem(i, 2, QTableWidgetItem(op["doc_name"]))
-            self.journal_table.setItem(i, 3, QTableWidgetItem(str(len(op["rows"]))))
-            self.journal_table.setItem(i, 4, QTableWidgetItem(op["unit_name"]))
+            self.journal_table.setItem(i, 2, QTableWidgetItem(op["doc_name"] or ""))
+            self.journal_table.setItem(i, 3, QTableWidgetItem(wo))
+            self.journal_table.setItem(i, 4, QTableWidgetItem(str(len(op["rows"]))))
+            self.journal_table.setItem(i, 5, QTableWidgetItem(op["unit_name"]))
 
         self._apply_journal_filter()
 
@@ -957,8 +1017,10 @@ class JournalTab(QWidget):
             if not text:
                 self.journal_table.setRowHidden(i, False)
                 continue
+            wo_low = (op.get("work_order_no") or "").lower()
             match = (
-                text in op["doc_name"].lower()
+                text in (op["doc_name"] or "").lower()
+                or text in wo_low
                 or text in op["date"].lower()
                 or any(text in (row["item_name"] or "").lower() for row in op["rows"])
             )
@@ -1023,6 +1085,11 @@ class BasketDialog(QDialog):
         self.setMinimumHeight(560)
         self._build_ui()
         self._refresh()
+
+    def _sync_basket_to_ref(self) -> None:
+        """Записать текущую корзину в список вкладки (копия при открытии иначе расходится при удалении ✕)."""
+        self._basket_ref.clear()
+        self._basket_ref.extend(copy.deepcopy(p) for p in self._basket)
 
     def _build_ui(self):
         if self._op_type == "IN":
@@ -1198,6 +1265,7 @@ class BasketDialog(QDialog):
     def _remove_item(self, idx: int):
         if 0 <= idx < len(self._basket):
             self._basket.pop(idx)
+            self._sync_basket_to_ref()
             self._refresh()
 
     def _on_clear(self):
@@ -1953,7 +2021,7 @@ class WorkOrderItemsDialog(QDialog):
         self.work_order = work_order
         self._search_rows: list[dict] = []
         self.setWindowTitle(f"Состав наряда: {work_order['order_no']}")
-        self.setMinimumSize(900, 560)
+        self.setMinimumSize(900, 620)
         self._build_ui()
         self.reload_items()
 
@@ -1962,9 +2030,30 @@ class WorkOrderItemsDialog(QDialog):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
 
-        note = QLabel("Статус наряда считается автоматически по выдачам (ВЫДАЧА) с тем же номером документа.")
+        note = QLabel(
+            "Статус наряда считается по всем записям журнала «ВЫДАЧА», проведённым с привязкой к этому наряду. "
+            "Ниже перечислены номера документов выдачи (каждая выдача может быть своим документом и датой)."
+        )
         note.setObjectName("JournalHint")
+        note.setWordWrap(True)
         layout.addWidget(note)
+
+        docs_lbl = QLabel("Документы выдачи по наряду")
+        docs_lbl.setObjectName("JournalHint")
+        layout.addWidget(docs_lbl)
+
+        self.docs_table = _create_fluent_table(self, 3)
+        self.docs_table.setHorizontalHeaderLabels(["Номер документа", "Период", "Строк в журнале"])
+        hd = self.docs_table.horizontalHeader()
+        hd.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hd.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hd.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.docs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.docs_table.setMaximumHeight(160)
+        self.docs_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+        )
+        layout.addWidget(self.docs_table)
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Поиск позиции:"))
@@ -2069,6 +2158,22 @@ class WorkOrderItemsDialog(QDialog):
         self.reload_items()
 
     def reload_items(self):
+        docs = self.db.get_work_order_issue_documents(self.work_order["id"])
+        self.docs_table.setRowCount(0)
+        for i, row in enumerate(docs):
+            self.docs_table.insertRow(i)
+            self.docs_table.setItem(i, 0, QTableWidgetItem(row["doc_name"] or ""))
+            self.docs_table.setItem(
+                i,
+                1,
+                QTableWidgetItem(
+                    _format_work_order_doc_period(row.get("first_date"), row.get("last_date"))
+                ),
+            )
+            self.docs_table.setItem(
+                i, 2, QTableWidgetItem(str(int(row.get("op_lines") or 0)))
+            )
+
         items = [dict(r) for r in self.db.get_work_order_items(self.work_order["id"])]
         issued = self.db.get_work_order_item_issue_stats(self.work_order["id"])
         self.items_table.setRowCount(0)

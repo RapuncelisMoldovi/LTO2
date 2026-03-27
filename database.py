@@ -779,6 +779,28 @@ class DatabaseManager:
         )
         return {r["variant_id"]: int(r["issued_qty"] or 0) for r in cur.fetchall()}
 
+    def get_work_order_issue_documents(self, work_order_id: int) -> list[dict]:
+        """Уникальные номера документов ВЫДАЧА по наряду и период дат по журналу."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                TRIM(j.doc_name) AS doc_name,
+                MIN(j.date) AS first_date,
+                MAX(j.date) AS last_date,
+                COUNT(*) AS op_lines
+            FROM journal j
+            WHERE j.work_order_id = ?
+              AND j.op_type = 'OUT'
+              AND j.doc_name IS NOT NULL
+              AND TRIM(j.doc_name) != ''
+            GROUP BY TRIM(j.doc_name)
+            ORDER BY first_date DESC, doc_name COLLATE NOCASE
+            """,
+            (work_order_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
     def recompute_work_order_status(self, work_order_id: int):
         items = self.get_work_order_items(work_order_id)
         if not items:
@@ -1101,6 +1123,7 @@ class DatabaseManager:
                 j.doc_name AS doc_name,
                 j.variant_id AS variant_id,
                 j.work_order_id AS work_order_id,
+                wo.order_no AS work_order_no,
                 v.size_name AS size_name,
                 v.full_code AS full_code,
                 i.name AS item_name,
@@ -1112,6 +1135,7 @@ class DatabaseManager:
             JOIN variants v ON j.variant_id = v.id
             JOIN items i ON v.item_id = i.id
             LEFT JOIN units u ON j.unit_id = u.id
+            LEFT JOIN work_orders wo ON j.work_order_id = wo.id
             {where_sql}
             ORDER BY j.date DESC, j.id DESC
             LIMIT ?
@@ -1187,7 +1211,16 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Журнал операций"
-        headers = ["Дата", "Операция", "Документ", "Название", "Размер", "Кол-во", "Подразделение"]
+        headers = [
+            "Дата",
+            "Операция",
+            "Документ",
+            "Наряд",
+            "Название",
+            "Размер",
+            "Кол-во",
+            "Подразделение",
+        ]
         for c, h in enumerate(headers, 1):
             ws.cell(1, c, h)
             ws.cell(1, c).font = Font(bold=True)
@@ -1197,10 +1230,11 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
             ws.cell(r, 1, row["date"])
             ws.cell(r, 2, op_text)
             ws.cell(r, 3, row["doc_name"] or "")
-            ws.cell(r, 4, row["item_name"])
-            ws.cell(r, 5, row["size_name"])
-            ws.cell(r, 6, qty)
-            ws.cell(r, 7, row["unit_name"] or "")
+            ws.cell(r, 4, (row["work_order_no"] or "").strip())
+            ws.cell(r, 5, row["item_name"])
+            ws.cell(r, 6, row["size_name"])
+            ws.cell(r, 7, qty)
+            ws.cell(r, 8, row["unit_name"] or "")
         wb.save(path)
         logger.info("Exported journal to Excel: %s", path)
         return True
@@ -1264,17 +1298,32 @@ def _export_journal_pdf(db: DatabaseManager, path: str, date_from: str, date_to:
             title_style,
         )
 
-        col_headers = ["Дата", "Операция", "Документ", "Название", "Размер", "Кол-во", "Подразделение"]
+        col_headers = [
+            "Дата",
+            "Операция",
+            "Документ",
+            "Наряд",
+            "Название",
+            "Размер",
+            "Кол-во",
+            "Подразделение",
+        ]
         data = [col_headers]
         for row in rows:
             op_text = "Приход" if row["op_type"] == "IN" else "Выдача"
             qty = row["quantity"] if row["quantity"] is not None else (1 if row["factory_sn"] else 0)
             data.append([
-                row["date"], op_text, row["doc_name"] or "", row["item_name"],
-                row["size_name"], str(qty), row["unit_name"] or "",
+                row["date"],
+                op_text,
+                row["doc_name"] or "",
+                (row["work_order_no"] or "").strip(),
+                row["item_name"],
+                row["size_name"],
+                str(qty),
+                row["unit_name"] or "",
             ])
 
-        col_widths = [35*mm, 22*mm, 35*mm, 70*mm, 22*mm, 18*mm, 40*mm]
+        col_widths = [32*mm, 20*mm, 30*mm, 26*mm, 62*mm, 20*mm, 16*mm, 36*mm]
         t = Table(data, colWidths=col_widths, repeatRows=1)
         t.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), font),
