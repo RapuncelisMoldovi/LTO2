@@ -8,6 +8,7 @@ from fluent_qss import application_stylesheet
 
 from database import (
     DatabaseManager,
+    JOURNAL_EXPORT_ROW_LIMIT,
     _export_journal_excel,
     _export_journal_pdf,
     _export_stock_excel,
@@ -15,7 +16,7 @@ from database import (
 )
 
 from PyQt6.QtCore import Qt, QRectF, QSize, QDate, QTimer, QSettings
-from PyQt6.QtGui import QIcon, QFontDatabase, QFont, QColor, QPainter
+from PyQt6.QtGui import QCloseEvent, QIcon, QFontDatabase, QFont, QColor, QPainter
 from qfluentwidgets import (
     ComboBox,
     DateEdit,
@@ -332,6 +333,42 @@ def _journal_operation_total_units(rows: list) -> int:
             except (TypeError, ValueError):
                 pass
     return total
+
+
+def _safe_sort_table_widget(table: QTableWidget, column: int, order: Qt.SortOrder) -> None:
+    """Программная сортировка с блокировкой сигналов заголовка (избегает вылетов при частых кликах)."""
+    if table.rowCount() <= 0:
+        return
+    cc = table.columnCount()
+    if column < 0 or column >= cc:
+        return
+    hh = table.horizontalHeader()
+    prev_block = hh.signalsBlocked()
+    hh.blockSignals(True)
+    try:
+        hh.setSortIndicator(column, order)
+        table.sortByColumn(column, order)
+    finally:
+        if not prev_block:
+            hh.blockSignals(False)
+
+
+def _safe_sort_tree_widget(tree: TreeWidget, column: int, order: Qt.SortOrder) -> None:
+    """То же для дерева склада / номенклатуры (QTreeWidget)."""
+    if tree.topLevelItemCount() <= 0:
+        return
+    cc = tree.columnCount()
+    if column < 0 or column >= cc:
+        return
+    header = tree.header()
+    prev_block = header.signalsBlocked()
+    header.blockSignals(True)
+    try:
+        header.setSortIndicator(column, order)
+        tree.sortByColumn(column, order)
+    finally:
+        if not prev_block:
+            header.blockSignals(False)
 
 
 class NewItemDialog(QDialog):
@@ -693,8 +730,7 @@ class NomenclatureTab(QWidget):
 
     def reload(self):
         self.tree.clear()
-        items = self.db.get_items()
-        for row in items:
+        for row in self.db.get_nomenclature_tree_data():
             top = QTreeWidgetItem(self.tree)
             top.setText(0, row["base_code"])
             top.setText(1, row["name"])
@@ -702,7 +738,7 @@ class NomenclatureTab(QWidget):
             top.setText(3, row["uom"] or "шт")
             top.setData(0, Qt.ItemDataRole.UserRole, row["id"])
             top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            variants = self.db.get_variants_for_item(row["id"])
+            variants = row["variants"]
             # Не показываем в дочерних строках вариант «Без размера» — он дублирует материнскую строку (базовый н/н)
             size_variants = [
                 v for v in variants
@@ -1194,8 +1230,7 @@ class JournalTab(QWidget):
 
         table.setSortingEnabled(True)
         if had_sort and self._ops and 0 <= prev_section < table.columnCount():
-            hh.setSortIndicator(prev_section, prev_order)
-            table.sortByColumn(prev_section, prev_order)
+            _safe_sort_table_widget(table, prev_section, prev_order)
 
         self._apply_journal_filter()
 
@@ -1233,6 +1268,23 @@ class JournalTab(QWidget):
             )
             table.setRowHidden(r, not match)
 
+    def _confirm_journal_export_if_within_limit(
+        self, date_from: str, date_to: str, unit_id: int | None
+    ) -> bool:
+        n = self.db.count_journal_rows(date_from=date_from, date_to=date_to, unit_id=unit_id)
+        if n <= JOURNAL_EXPORT_ROW_LIMIT:
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Экспорт журнала",
+            f"По выбранным фильтрам записей: {n}. В файл попадут не более "
+            f"{JOURNAL_EXPORT_ROW_LIMIT} (сначала самые новые по дате).\n\n"
+            "Продолжить экспорт?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def on_export_journal_excel(self):
         path, _ = QFileDialog.getSaveFileName(self, "Экспорт журнала", "", "Excel (*.xlsx)")
         if not path:
@@ -1242,6 +1294,8 @@ class JournalTab(QWidget):
         date_from = self.date_from_edit.date().toString("yyyy-MM-dd")
         date_to = self.date_to_edit.date().toString("yyyy-MM-dd")
         unit_id = self.filter_unit_combo.currentData()
+        if not self._confirm_journal_export_if_within_limit(date_from, date_to, unit_id):
+            return
         if _export_journal_excel(self.db, path, date_from, date_to, unit_id):
             QMessageBox.information(self, "Экспорт", "Журнал экспортирован в Excel.")
         else:
@@ -1256,6 +1310,8 @@ class JournalTab(QWidget):
         date_from = self.date_from_edit.date().toString("yyyy-MM-dd")
         date_to = self.date_to_edit.date().toString("yyyy-MM-dd")
         unit_id = self.filter_unit_combo.currentData()
+        if not self._confirm_journal_export_if_within_limit(date_from, date_to, unit_id):
+            return
         if _export_journal_pdf(self.db, path, date_from, date_to, unit_id):
             QMessageBox.information(self, "Экспорт", "Журнал экспортирован в PDF.")
         else:
@@ -1626,14 +1682,7 @@ class OperationsTab(QWidget):
         self.results_table.setSortingEnabled(True)
         self._results_sort_column = 0
         self._results_sort_order = Qt.SortOrder.AscendingOrder
-        def _on_results_header_clicked(section):
-            if section == 2:
-                hh.setSortIndicator(self._results_sort_column, self._results_sort_order)
-                self.results_table.sortByColumn(self._results_sort_column, self._results_sort_order)
-            else:
-                self._results_sort_column = hh.sortIndicatorSection()
-                self._results_sort_order = hh.sortIndicatorOrder()
-        hh.sectionClicked.connect(_on_results_header_clicked)
+        hh.sectionClicked.connect(self._on_results_header_clicked)
         root.addWidget(self.results_table, 1)
 
         # ── Панель добавления выбранного товара ──
@@ -1706,6 +1755,31 @@ class OperationsTab(QWidget):
 
     def load_units(self):
         self._units = list(self.db.get_units())
+
+    def repaint_search_for_theme(self) -> None:
+        """Обновить цвета колонки «Остаток» после смены светлой/тёмной темы."""
+        if not self._search_rows:
+            return
+        if self.op_segment.currentRouteKey() == "out":
+            self._refresh_results_table()
+        else:
+            self._do_search(self.search_edit.text().strip())
+
+    def _on_results_header_clicked(self, section: int) -> None:
+        """Колонка «Размер» не сортируется; остальные — запоминаем порядок. Отложенно, без рекурсии с Qt."""
+        def _apply() -> None:
+            hh = self.results_table.horizontalHeader()
+            if section == 2:
+                _safe_sort_table_widget(
+                    self.results_table,
+                    self._results_sort_column,
+                    self._results_sort_order,
+                )
+                return
+            self._results_sort_column = hh.sortIndicatorSection()
+            self._results_sort_order = hh.sortIndicatorOrder()
+
+        QTimer.singleShot(0, _apply)
 
     def _reload_work_orders(self):
         self.wo_combo.clear()
@@ -1999,12 +2073,11 @@ class OperationsTab(QWidget):
             self.results_table.setItem(i, 3, stock_item)
             self.results_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, row["variant_id"])
         self.results_table.setSortingEnabled(True)
-        try:
-            hh = self.results_table.horizontalHeader()
-            hh.setSortIndicator(self._results_sort_column, self._results_sort_order)
-            self.results_table.sortByColumn(self._results_sort_column, self._results_sort_order)
-        except Exception as e:
-            logger.debug("Sort indicator restore failed: %s", e)
+        _safe_sort_table_widget(
+            self.results_table,
+            self._results_sort_column,
+            self._results_sort_order,
+        )
 
         if self.selected_variant and self.selected_variant["variant_id"] not in visible_variant_ids:
             self.results_table.clearSelection()
@@ -2698,14 +2771,7 @@ class StockTab(QWidget):
         self.tree.setSortingEnabled(True)
         self._stock_sort_column = 0
         self._stock_sort_order = Qt.SortOrder.AscendingOrder
-        def _on_stock_header_clicked(section):
-            if section == 2 or section == 3:
-                header.setSortIndicator(self._stock_sort_column, self._stock_sort_order)
-                self.tree.sortByColumn(self._stock_sort_column, self._stock_sort_order)
-            else:
-                self._stock_sort_column = header.sortIndicatorSection()
-                self._stock_sort_order = header.sortIndicatorOrder()
-        header.sectionClicked.connect(_on_stock_header_clicked)
+        header.sectionClicked.connect(self._on_stock_header_clicked)
 
         self.search_edit.textChanged.connect(lambda _: self._search_timer.start())
         self.export_stock_excel_btn.clicked.connect(self.on_export_stock_excel)
@@ -2713,6 +2779,22 @@ class StockTab(QWidget):
 
         _style_fluent_tree_frame(self.tree)
         layout.addWidget(self.tree)
+
+    def _on_stock_header_clicked(self, section: int) -> None:
+        """Колонки «Размер» и «Остаток» не меняют режим сортировки; клик откатывается отложенно."""
+        def _apply() -> None:
+            header = self.tree.header()
+            if section in (2, 3):
+                _safe_sort_tree_widget(
+                    self.tree,
+                    self._stock_sort_column,
+                    self._stock_sort_order,
+                )
+                return
+            self._stock_sort_column = header.sortIndicatorSection()
+            self._stock_sort_order = header.sortIndicatorOrder()
+
+        QTimer.singleShot(0, _apply)
 
     def on_export_stock_excel(self):
         path, _ = QFileDialog.getSaveFileName(self, "Экспорт остатков", "", "Excel (*.xlsx)")
@@ -3086,10 +3168,17 @@ class MainWindow(FluentWindow):
         self._refresh_export_button_icons()
         self.stock_tab.reload()
         self.work_orders_tab.reload()
-        self.journal_tab.load_journal()
-        self.nomenclature_tab.reload()
-        self.operations_tab.load_units()
-        self.units_tab.reload()
+        self.operations_tab.repaint_search_for_theme()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        db = getattr(self, "db", None)
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                logger.exception("Failed to close database")
+            self.db = None
+        super().closeEvent(event)
 
 
 def main():

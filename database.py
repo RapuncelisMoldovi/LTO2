@@ -283,6 +283,54 @@ class DatabaseManager:
         )
         return cur.fetchall()
 
+    def get_nomenclature_tree_data(self) -> list[dict]:
+        """Изделия и все варианты одним запросом (без N+1 к get_variants_for_item)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                i.id AS item_id,
+                i.name AS item_name,
+                i.base_code,
+                i.uom,
+                i.type AS item_type,
+                v.id AS variant_id,
+                v.size_name,
+                v.full_code
+            FROM items i
+            LEFT JOIN variants v ON v.item_id = i.id
+            ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
+            """
+        )
+        rows = cur.fetchall()
+        out: list[dict] = []
+        current: dict | None = None
+        for row in rows:
+            iid = row["item_id"]
+            if current is None or current["id"] != iid:
+                if current is not None:
+                    out.append(current)
+                current = {
+                    "id": iid,
+                    "name": row["item_name"],
+                    "base_code": row["base_code"],
+                    "uom": row["uom"],
+                    "type": row["item_type"],
+                    "variants": [],
+                }
+            vid = row["variant_id"]
+            if vid is not None:
+                current["variants"].append(
+                    {
+                        "id": vid,
+                        "size_name": row["size_name"],
+                        "full_code": row["full_code"],
+                    }
+                )
+        if current is not None:
+            out.append(current)
+        return out
+
     def get_item(self, item_id: int):
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
@@ -1102,16 +1150,14 @@ class DatabaseManager:
         )
         return cur.fetchall()
 
-    def get_journal_view(
-        self,
-        limit: int = 200,
-        date_from: str | None = None,
-        date_to: str | None = None,
-        unit_id: int | None = None,
-    ):
-        cur = self.conn.cursor()
-        where_parts = []
-        params = []
+    @staticmethod
+    def _journal_sql_filters(
+        date_from: str | None,
+        date_to: str | None,
+        unit_id: int | None,
+    ) -> tuple[str, list]:
+        where_parts: list[str] = []
+        params: list = []
         if date_from:
             where_parts.append("date(j.date) >= ?")
             params.append(date_from)
@@ -1122,7 +1168,31 @@ class DatabaseManager:
             where_parts.append("j.unit_id = ?")
             params.append(unit_id)
         where_sql = " WHERE " + " AND ".join(where_parts) if where_parts else ""
-        params.append(limit)
+        return where_sql, params
+
+    def count_journal_rows(
+        self,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        unit_id: int | None = None,
+    ) -> int:
+        """Число строк журнала с теми же фильтрами, что у get_journal_view (без лимита)."""
+        where_sql, params = self._journal_sql_filters(date_from, date_to, unit_id)
+        cur = self.conn.cursor()
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM journal j {where_sql}", tuple(params))
+        row = cur.fetchone()
+        return int(row["cnt"] if row else 0)
+
+    def get_journal_view(
+        self,
+        limit: int = 200,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        unit_id: int | None = None,
+    ):
+        cur = self.conn.cursor()
+        where_sql, params = self._journal_sql_filters(date_from, date_to, unit_id)
+        params_with_limit = list(params) + [limit]
         cur.execute(
             f"""
             SELECT
@@ -1149,7 +1219,7 @@ class DatabaseManager:
             ORDER BY j.date DESC, j.id DESC
             LIMIT ?
             """,
-            tuple(params),
+            tuple(params_with_limit),
         )
         return cur.fetchall()
 
@@ -1206,6 +1276,10 @@ class DatabaseManager:
         return cur.fetchall()
 
 
+# Максимум строк журнала в одном файле Excel/PDF (самые новые по дате).
+JOURNAL_EXPORT_ROW_LIMIT = 10000
+
+
 # --- Экспорт отчётов: Excel / PDF ---
 
 def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_to: str, unit_id: int | None) -> bool:
@@ -1216,7 +1290,12 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
         logger.warning("openpyxl not installed: pip install openpyxl")
         return False
     try:
-        rows = db.get_journal_view(limit=10000, date_from=date_from, date_to=date_to, unit_id=unit_id)
+        rows = db.get_journal_view(
+            limit=JOURNAL_EXPORT_ROW_LIMIT,
+            date_from=date_from,
+            date_to=date_to,
+            unit_id=unit_id,
+        )
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Журнал операций"
@@ -1264,8 +1343,8 @@ def _register_pdf_font() -> str:
     try:
         pdfmetrics.getFont(font_name)
         return font_name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("PDF getFont(%s): %s", font_name, e)
 
     candidates = [
         "C:/Windows/Fonts/arial.ttf",
@@ -1292,7 +1371,12 @@ def _export_journal_pdf(db: DatabaseManager, path: str, date_from: str, date_to:
         return False
     try:
         font = _register_pdf_font()
-        rows = db.get_journal_view(limit=10000, date_from=date_from, date_to=date_to, unit_id=unit_id)
+        rows = db.get_journal_view(
+            limit=JOURNAL_EXPORT_ROW_LIMIT,
+            date_from=date_from,
+            date_to=date_to,
+            unit_id=unit_id,
+        )
 
         doc = SimpleDocTemplate(
             path,
