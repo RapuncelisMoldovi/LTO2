@@ -166,8 +166,6 @@ QPushButton#DangerBtn:pressed {
 QPushButton#BasketBtn {
     border-radius: 5px;
     font-weight: 600;
-    min-height: 32px;
-    max-height: 32px;
 }
 QPushButton#BasketBtn[hasItems="true"] {
     background: #0078D4;
@@ -219,11 +217,6 @@ QPushButton#DelItemBtn:hover {
     background: #C42B1C;
     color: #FFFFFF;
     border-color: #C42B1C;
-}
-
-QWidget#QuantitySpinBox {
-    background: #F3F2F1;
-    border-radius: 5px;
 }
 
 QLabel#SelectedLabel {
@@ -284,8 +277,6 @@ QPushButton#PostBtnIn {
     border-radius: 5px;
     padding: 0 20px;
     font-weight: 600;
-    min-height: 36px;
-    max-height: 36px;
     font-size: 13px;
 }
 QPushButton#PostBtnIn:hover { background: #0E6A0E; border-color: #0E6A0E; }
@@ -298,8 +289,6 @@ QPushButton#PostBtnOut {
     border-radius: 5px;
     padding: 0 20px;
     font-weight: 600;
-    min-height: 36px;
-    max-height: 36px;
     font-size: 13px;
 }
 QPushButton#PostBtnOut:hover { background: #A7410D; border-color: #A7410D; }
@@ -311,8 +300,6 @@ QPushButton#ClearBtn {
     border: 1px solid #C42B1C;
     border-radius: 5px;
     padding: 0 16px;
-    min-height: 36px;
-    max-height: 36px;
     font-size: 13px;
 }
 QPushButton#ClearBtn:hover { background: #FDE7E9; }
@@ -343,6 +330,13 @@ QLabel#OpDetailPosLabel {
 }
 QLabel#JournalHint { color: #605E5C; font-size: 12px; background: transparent; }
 QLabel#VariantHint { color: #605E5C; font-size: 11px; background: transparent; }
+QLabel#FluentCaptionLbl {
+    color: #605E5C;
+    font-size: 13px;
+    background: transparent;
+    border: none;
+    padding: 0 4px 0 0;
+}
 
 QCalendarWidget QWidget {
     alternate-background-color: #FAFAFA;
@@ -524,8 +518,6 @@ QPushButton#DangerBtn:pressed {
 QPushButton#BasketBtn {
     border-radius: 5px;
     font-weight: 600;
-    min-height: 32px;
-    max-height: 32px;
 }
 QPushButton#BasketBtn[hasItems="true"] {
     background: #0078D4;
@@ -579,11 +571,6 @@ QPushButton#DelItemBtn:hover {
     border-color: #C42B1C;
 }
 
-QWidget#QuantitySpinBox {
-    background: #323130;
-    border-radius: 5px;
-}
-
 QLabel#SelectedLabel {
     color: #A19F9D;
     font-size: 12px;
@@ -632,8 +619,6 @@ QPushButton#PostBtnIn {
     border-radius: 5px;
     padding: 0 20px;
     font-weight: 600;
-    min-height: 36px;
-    max-height: 36px;
     font-size: 13px;
 }
 QPushButton#PostBtnIn:hover { background: #0E6A0E; border-color: #0E6A0E; }
@@ -646,8 +631,6 @@ QPushButton#PostBtnOut {
     border-radius: 5px;
     padding: 0 20px;
     font-weight: 600;
-    min-height: 36px;
-    max-height: 36px;
     font-size: 13px;
 }
 QPushButton#PostBtnOut:hover { background: #A7410D; border-color: #A7410D; }
@@ -659,8 +642,6 @@ QPushButton#ClearBtn {
     border: 1px solid #FF9B9B;
     border-radius: 5px;
     padding: 0 16px;
-    min-height: 36px;
-    max-height: 36px;
     font-size: 13px;
 }
 QPushButton#ClearBtn:hover { background: rgba(255, 155, 155, 18); }
@@ -691,6 +672,13 @@ QLabel#OpDetailPosLabel {
 }
 QLabel#JournalHint { color: #A19F9D; font-size: 12px; background: transparent; }
 QLabel#VariantHint { color: #A19F9D; font-size: 11px; background: transparent; }
+QLabel#FluentCaptionLbl {
+    color: #C8C6C4;
+    font-size: 13px;
+    background: transparent;
+    border: none;
+    padding: 0 4px 0 0;
+}
 
 QCalendarWidget QWidget {
     alternate-background-color: #323130;

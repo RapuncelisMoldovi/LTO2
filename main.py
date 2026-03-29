@@ -14,8 +14,8 @@ from database import (
     _export_stock_pdf,
 )
 
-from PyQt6.QtCore import Qt, QSize, QDate, pyqtSignal, QTimer, QSettings
-from PyQt6.QtGui import QIcon, QFontDatabase, QFont, QColor, QIntValidator
+from PyQt6.QtCore import Qt, QRectF, QSize, QDate, QTimer, QSettings
+from PyQt6.QtGui import QIcon, QFontDatabase, QFont, QColor, QPainter
 from qfluentwidgets import (
     ComboBox,
     DateEdit,
@@ -28,6 +28,8 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     RadioButton,
+    SegmentedWidget,
+    SpinBox,
     SubtitleLabel,
     TableWidget,
     TitleLabel,
@@ -37,6 +39,7 @@ from qfluentwidgets import (
     TreeWidget,
     setCustomStyleSheet,
     setTheme,
+    isDarkTheme,
 )
 
 from PyQt6.QtWidgets import (
@@ -204,6 +207,17 @@ def _create_standard_fluent_date_edit(parent: QWidget | None, default_date: QDat
     return w
 
 
+def _fluent_caption_label(text: str, buddy: QWidget | None = None) -> QLabel:
+    """Подпись к полю: цвет из QSS (#FluentCaptionLbl) при смене светлой/тёмной темы."""
+    lbl = QLabel(text)
+    lbl.setObjectName("FluentCaptionLbl")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    lbl.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
+    if buddy is not None:
+        lbl.setBuddy(buddy)
+    return lbl
+
+
 class GhostButton(TransparentPushButton):
     """Кнопка без заливки и обводки, только иконка (Fluent TransparentPushButton)."""
 
@@ -213,87 +227,33 @@ class GhostButton(TransparentPushButton):
         self.setText("")
 
 
-class QuantitySpinBox(QWidget):
-    """Счётчик в виде [−] число [+] — большие кнопки слева и справа (как на макете)."""
-    valueChanged = pyqtSignal(int)
+class OpTypeSegmentedWidget(SegmentedWidget):
+    """Переключатель ПРИХОД/ВЫДАЧА: одна подложка без нижней полоски Pivot.
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("QuantitySpinBox")
-        self._value = 1
-        self._min_val = 1
-        self._max_val = 1_000_000
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+    В qfluentwidgets.SegmentedWidget подложка рисуется с y=0, а сегменты могут
+    быть смещены по вертикали в QHBoxLayout — текст и «пилюля» расходятся.
+    Здесь прямоугольник привязан к geometry() активной кнопки.
+    """
 
-        self._minus_btn = PrimaryPushButton("−")
-        self._minus_btn.setFixedSize(36, 32)
-        self._minus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._minus_btn.clicked.connect(self._on_minus)
-
-        self._value_edit = LineEdit()
-        self._value_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._value_edit.setMinimumWidth(44)
-        self._value_edit.setFixedHeight(32)
-        self._value_edit.setValidator(QIntValidator(1, 1_000_000))
-        self._value_edit.setText("1")
-        self._value_edit.editingFinished.connect(self._commit_edit)
-
-        self._plus_btn = PrimaryPushButton("+")
-        self._plus_btn.setFixedSize(36, 32)
-        self._plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._plus_btn.clicked.connect(self._on_plus)
-
-        layout.addWidget(self._minus_btn)
-        layout.addWidget(self._value_edit, 1)
-        layout.addWidget(self._plus_btn)
-
-    def _commit_edit(self):
-        """Применить введённое в поле значение (по Enter или при потере фокуса)."""
-        try:
-            v = int(self._value_edit.text().strip() or 0)
-        except ValueError:
-            v = self._value
-        self.setValue(v)
-
-    def _on_minus(self):
-        if self._value > self._min_val:
-            self.setValue(self._value - 1)
-
-    def _on_plus(self):
-        if self._value < self._max_val:
-            self.setValue(self._value + 1)
-
-    def value(self) -> int:
-        return self._value
-
-    def setValue(self, v: int):
-        v = max(self._min_val, min(self._max_val, v))
-        changed = v != self._value
-        self._value = v
-        self._value_edit.setText(str(v))
-        self._minus_btn.setEnabled(self._value > self._min_val)
-        self._plus_btn.setEnabled(self._value < self._max_val)
-        if changed:
-            self.valueChanged.emit(self._value)
-
-    def setRange(self, min_val: int, max_val: int):
-        self._min_val = min_val
-        self._max_val = max_val
-        self._value_edit.setValidator(QIntValidator(min_val, max_val))
-        self.setValue(self._value)
-
-    def setEnabled(self, enabled: bool):
-        super().setEnabled(enabled)
-        self._minus_btn.setEnabled(enabled and self._value > self._min_val)
-        self._plus_btn.setEnabled(enabled and self._value < self._max_val)
-        self._value_edit.setEnabled(enabled)
-
-    def commit(self):
-        """Применить введённое в поле значение (нужно вызывать перед чтением value() при клике по кнопке)."""
-        self._commit_edit()
-
+    def paintEvent(self, e):
+        QWidget.paintEvent(self, e)
+        if not self.currentItem():
+            return
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing)
+        if isDarkTheme():
+            painter.setPen(QColor(255, 255, 255, 14))
+            painter.setBrush(QColor(255, 255, 255, 15))
+        else:
+            painter.setPen(QColor(0, 0, 0, 19))
+            painter.setBrush(QColor(255, 255, 255, 179))
+        item = self.currentItem()
+        g = item.geometry()
+        x = float(self.slideAni.value()) + 1.0
+        y = float(g.y() + 1)
+        w = max(0.0, float(g.width() - 2))
+        h = max(0.0, float(g.height() - 2))
+        painter.drawRoundedRect(QRectF(x, y, w, h), 5, 5)
 
 
 def _make_export_btn(icon: FluentIcon, tooltip: str) -> ToolButton:
@@ -340,6 +300,40 @@ def _format_work_order_doc_period(first_iso: str | None, last_iso: str | None) -
     return f"{a} — {b}"
 
 
+def _basket_total_units(basket: list[dict]) -> int:
+    """Суммарное число единиц имущества: сумма qty (мат. средства) + 1 на каждую серийную позицию."""
+    total = 0
+    for p in basket:
+        if p.get("item_type") == "serial":
+            total += 1
+        else:
+            total += int(p.get("qty") or 0)
+    return total
+
+
+def _journal_row_value(row: object, key: str, default=None):
+    """Значение поля строки журнала (sqlite3.Row не поддерживает .get())."""
+    try:
+        return row[key]
+    except (KeyError, TypeError, IndexError):
+        return default
+
+
+def _journal_operation_total_units(rows: list) -> int:
+    """Единицы по строкам операции из журнала: quantity для мат. средств, 1 ед. на каждую серийную строку."""
+    total = 0
+    for r in rows:
+        if (_journal_row_value(r, "item_type") or "") == "serial":
+            total += 1
+        else:
+            q = _journal_row_value(r, "quantity", 0)
+            try:
+                total += int(q or 0)
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
 class NewItemDialog(QDialog):
     def __init__(self, db: "DatabaseManager", parent=None, edit_item_id: int | None = None):
         super().__init__(parent)
@@ -370,9 +364,9 @@ class NewItemDialog(QDialog):
         self.uom_edit = LineEdit()
         self.uom_edit.setText("шт")
 
-        form.addRow("Название:", self.name_edit)
-        form.addRow("Н/Н (базовый):", self.base_code_edit)
-        form.addRow("Ед. изм.:", self.uom_edit)
+        form.addRow(_fluent_caption_label("Название:", self.name_edit), self.name_edit)
+        form.addRow(_fluent_caption_label("Н/Н (базовый):", self.base_code_edit), self.base_code_edit)
+        form.addRow(_fluent_caption_label("Ед. изм.:", self.uom_edit), self.uom_edit)
 
         type_layout = QHBoxLayout()
         self.qty_radio = RadioButton("Мат. средства")
@@ -387,7 +381,7 @@ class NewItemDialog(QDialog):
 
         type_wrapper = QWidget()
         type_wrapper.setLayout(type_layout)
-        form.addRow("Тип учета:", type_wrapper)
+        form.addRow(_fluent_caption_label("Тип учета:", type_wrapper), type_wrapper)
 
         layout.addLayout(form)
 
@@ -447,8 +441,8 @@ class NewVariantDialog(QDialog):
         self.full_code_edit.setPlaceholderText("10 цифр, например 1776184606")
         self.full_code_edit.setInputMask("9999999999")
 
-        form.addRow("Размер:", self.size_edit)
-        form.addRow("Н/Н (полный):", self.full_code_edit)
+        form.addRow(_fluent_caption_label("Размер:", self.size_edit), self.size_edit)
+        form.addRow(_fluent_caption_label("Н/Н (полный):", self.full_code_edit), self.full_code_edit)
 
         hint = QLabel(f"Базовый Н/Н изделия: <b>{self.base_code}</b>")
         hint.setObjectName("VariantHint")
@@ -501,10 +495,11 @@ class NomenclatureTab(QWidget):
         layout.setSpacing(12)
 
         search_row = QHBoxLayout()
-        search_row.addWidget(QLabel("Поиск:"))
+        search_row.setSpacing(8)
         self.search_edit = LineEdit()
         self.search_edit.setPlaceholderText("По наименованию и номенклатурному номеру…")
-        search_row.addWidget(self.search_edit)
+        search_row.addWidget(_fluent_caption_label("Поиск:", self.search_edit))
+        search_row.addWidget(self.search_edit, 1)
         layout.addLayout(search_row)
 
         self.tree = TreeWidget()
@@ -551,15 +546,27 @@ class NomenclatureTab(QWidget):
         self.import_excel_btn.clicked.connect(self.on_import_from_excel)
 
     def _selected_item_id(self) -> int | None:
-        """Возвращает id изделия по текущей выбранной строке (сама строка или дочерняя)."""
+        """Id изделия: для строки изделия или для выбранного дочернего размера (через родителя)."""
         current = self.tree.currentItem()
         if not current:
             return None
-        item_id = current.data(0, Qt.ItemDataRole.UserRole)
-        if item_id is not None:
-            return item_id
         parent = current.parent()
-        return parent.data(0, Qt.ItemDataRole.UserRole) if parent else None
+        if parent is not None:
+            raw = parent.data(0, Qt.ItemDataRole.UserRole)
+            return int(raw) if raw is not None else None
+        raw = current.data(0, Qt.ItemDataRole.UserRole)
+        return int(raw) if raw is not None else None
+
+    def _selected_variant_id(self) -> int | None:
+        """Id варианта (размера), если выбрана дочерняя строка дерева."""
+        current = self.tree.currentItem()
+        if not current or current.parent() is None:
+            return None
+        raw = current.data(0, Qt.ItemDataRole.UserRole)
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _on_nom_item_clicked(self, item: QTreeWidgetItem, column: int):
         if item.childCount() > 0:
@@ -569,17 +576,32 @@ class NomenclatureTab(QWidget):
         item = self.tree.itemAt(pos)
         if not item:
             return
-        item_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if item_id is None:
-            return
+        gpos = self.tree.viewport().mapToGlobal(pos)
         parent = item.parent()
-        if parent is not None:
+        if parent is None:
+            item_id = item.data(0, Qt.ItemDataRole.UserRole)
+            if item_id is None:
+                return
+            menu = QMenu(self)
+            add_size_action = menu.addAction("Добавить размер")
+            action = menu.exec(gpos)
+            if action == add_size_action:
+                self._add_variant_for_item(int(item_id))
+            return
+        variant_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if variant_id is None:
             return
         menu = QMenu(self)
-        add_size_action = menu.addAction("Добавить размер")
-        action = menu.exec(self.tree.viewport().mapToGlobal(pos))
-        if action == add_size_action:
-            self._add_variant_for_item(item_id)
+        menu.addAction("Редактировать размер").setData("edit")
+        menu.addAction("Удалить размер").setData("delete")
+        act = menu.exec(gpos)
+        if act is None:
+            return
+        vid = int(variant_id)
+        if act.data() == "edit":
+            self._edit_variant_by_id(vid)
+        elif act.data() == "delete":
+            self._delete_variant_by_id(vid)
 
     def _add_variant_for_item(self, item_id: int):
         item_row = self.db.get_item(item_id)
@@ -601,6 +623,73 @@ class NomenclatureTab(QWidget):
                 )
                 return
             self.reload()
+
+    def _edit_variant_by_id(self, variant_id: int) -> None:
+        meta = self.db.get_variant_with_item(variant_id)
+        if not meta:
+            return
+        base_code = meta["base_code"] or ""
+        dlg = NewVariantDialog(base_code, self, db=self.db, edit_variant_id=variant_id)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        size_name, full_code = dlg.get_data()
+        try:
+            self.db.update_variant(variant_id, size_name, full_code)
+        except sqlite3.IntegrityError as e:
+            logger.warning("Update variant failed: %s", e)
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                "Не удалось сохранить: полный Н/Н уже используется другим вариантом.",
+            )
+            return
+        except Exception as e:
+            logger.exception("Update variant failed: %s", e)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить размер:\n{e}")
+            return
+        self.reload()
+
+    def _delete_variant_by_id(self, variant_id: int) -> None:
+        meta = self.db.get_variant_with_item(variant_id)
+        if not meta:
+            return
+        item_name = meta["item_name"] or ""
+        size_disp = _size_display(meta["size_name"])
+        full_code = meta["full_code"] or ""
+        has_j = self.db.has_journal_entries_for_variant(variant_id)
+        wo_n = self.db.work_order_items_count_for_variant(variant_id)
+        if meta["item_type"] == "qty":
+            stock = self.db.get_qty_stock(variant_id)
+        else:
+            stock = len(self.db.get_serials_for_variant(variant_id))
+        warn_lines: list[str] = []
+        if has_j:
+            warn_lines.append("Записи журнала по этому размеру будут удалены.")
+        if wo_n:
+            warn_lines.append(f"Строки в нарядах ({wo_n}) с этой позицией будут удалены.")
+        if stock > 0:
+            warn_lines.append(f"Остаток на складе ({stock} ед.) будет потерян.")
+        extra = "\n\n" + "\n".join(warn_lines) if warn_lines else ""
+        msg = (
+            f"Удалить размер «{size_disp}» (полный Н/Н {full_code}) изделия «{item_name}»?{extra}\n\n"
+            "Продолжить?"
+        )
+        reply = QMessageBox.question(
+            self,
+            "Удаление размера",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.delete_variant(variant_id)
+        except Exception as e:
+            logger.exception("Delete variant failed: %s", e)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить размер:\n{e}")
+            return
+        self.reload()
 
     def reload(self):
         self.tree.clear()
@@ -629,7 +718,7 @@ class NomenclatureTab(QWidget):
                     child.setText(2, _size_display(v["size_name"]))
                     child.setText(3, row["uom"] or "шт")
                     child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    child.setData(0, Qt.ItemDataRole.UserRole, None)
+                    child.setData(0, Qt.ItemDataRole.UserRole, v["id"])
                 top.setExpanded(False)
         self._apply_nom_filter()
 
@@ -670,9 +759,13 @@ class NomenclatureTab(QWidget):
             self.reload()
 
     def on_edit_item(self):
+        vid = self._selected_variant_id()
+        if vid is not None:
+            self._edit_variant_by_id(vid)
+            return
         item_id = self._selected_item_id()
         if item_id is None:
-            QMessageBox.warning(self, "Ошибка", "Выберите изделие для редактирования.")
+            QMessageBox.warning(self, "Ошибка", "Выберите изделие или размер для редактирования.")
             return
         dlg = NewItemDialog(self.db, self, edit_item_id=item_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -686,9 +779,13 @@ class NomenclatureTab(QWidget):
             self.reload()
 
     def on_delete_item(self):
+        vid = self._selected_variant_id()
+        if vid is not None:
+            self._delete_variant_by_id(vid)
+            return
         item_id = self._selected_item_id()
         if item_id is None:
-            QMessageBox.warning(self, "Удаление", "Выберите изделие для удаления.")
+            QMessageBox.warning(self, "Удаление", "Выберите изделие или размер для удаления.")
             return
         item_row = self.db.get_item(item_id)
         if not item_row:
@@ -803,7 +900,9 @@ class OperationDetailDialog(QDialog):
         hf_layout.addWidget(_lbl_val(op_data["unit_name"] or "—"), 1, 4)
         layout.addWidget(header_frame)
 
-        pos_label = QLabel(f"Позиции ({len(op_data['rows'])}):")
+        n_pos = len(op_data["rows"])
+        n_units = _journal_operation_total_units(op_data["rows"])
+        pos_label = QLabel(f"Позиции: {n_pos} · всего {n_units} ед.")
         pos_label.setObjectName("OpDetailPosLabel")
         layout.addWidget(pos_label)
 
@@ -843,13 +942,15 @@ class OperationDetailDialog(QDialog):
     def _on_reverse(self):
         op = self._op_data
         n = len(op["rows"])
+        u = _journal_operation_total_units(op["rows"])
         op_label = "ПРИХОД" if op["op_type"] == "IN" else "ВЫДАЧА"
         wo = (op.get("work_order_no") or "").strip()
         wo_part = f", наряд «{wo}»" if wo else ""
         reply = QMessageBox.warning(
             self,
             "Отмена операции",
-            f"Отменить операцию {op_label} (документ «{op['doc_name'] or '—'}»{wo_part}, {n} поз.)?\n\n"
+            f"Отменить операцию {op_label} (документ «{op['doc_name'] or '—'}»{wo_part}, "
+            f"{u} ед., {n} поз.)?\n\n"
             "Все позиции будут возвращены на склад (или списаны, если это был приход). "
             "Действие необратимо.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -864,8 +965,27 @@ class OperationDetailDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось отменить операцию:\n{e}")
             return
         self.was_reversed = True
-        QMessageBox.information(self, "Успех", f"Операция отменена ({n} поз.).")
+        QMessageBox.information(self, "Успех", f"Операция отменена: {u} ед. ({n} поз.).")
         self.accept()
+
+
+class _IntSortTableItem(QTableWidgetItem):
+    """Ячейка таблицы: сортировка по целому числу из текста (колонка «Позиций»)."""
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, QTableWidgetItem):
+            return NotImplemented
+        try:
+            return int(self.text()) < int(other.text())
+        except ValueError:
+            return self.text().casefold() < other.text().casefold()
+
+
+def _journal_row_item(text: str, op_idx: int) -> QTableWidgetItem:
+    """Ячейка журнала: UserRole = индекс в JournalTab._ops (стабилен при перестановке строк)."""
+    it = QTableWidgetItem(text)
+    it.setData(Qt.ItemDataRole.UserRole, op_idx)
+    return it
 
 
 class JournalTab(QWidget):
@@ -894,41 +1014,77 @@ class JournalTab(QWidget):
         main_layout.addWidget(hint)
 
         filter_layout = QHBoxLayout()
-        filter_layout.addWidget(QLabel("Дата с:"))
+        filter_layout.setSpacing(12)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+
         self.date_from_edit = _create_standard_fluent_date_edit(
             self, QDate.currentDate().addMonths(-1)
         )
-        filter_layout.addWidget(self.date_from_edit)
-        filter_layout.addWidget(QLabel("по:"))
         self.date_to_edit = _create_standard_fluent_date_edit(self, QDate.currentDate())
-        filter_layout.addWidget(self.date_to_edit)
-        filter_layout.addWidget(QLabel("Подразделение:"))
         self.filter_unit_combo = ComboBox()
-        filter_layout.addWidget(self.filter_unit_combo)
+        self.filter_unit_combo.setMinimumWidth(160)
+
+        from_block = QWidget()
+        from_lay = QHBoxLayout(from_block)
+        from_lay.setContentsMargins(0, 0, 0, 0)
+        from_lay.setSpacing(6)
+        from_lay.addWidget(_fluent_caption_label("Дата с:"))
+        from_lay.addWidget(self.date_from_edit)
+        from_block.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        to_block = QWidget()
+        to_lay = QHBoxLayout(to_block)
+        to_lay.setContentsMargins(0, 0, 0, 0)
+        to_lay.setSpacing(6)
+        to_lay.addWidget(_fluent_caption_label("по:"))
+        to_lay.addWidget(self.date_to_edit)
+        to_block.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        unit_block = QWidget()
+        unit_lay = QHBoxLayout(unit_block)
+        unit_lay.setContentsMargins(0, 0, 0, 0)
+        unit_lay.setSpacing(8)
+        unit_lay.addWidget(_fluent_caption_label("Подразделение:"))
+        unit_lay.addWidget(self.filter_unit_combo, 1)
+        unit_block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         self.filter_btn = PushButton("Применить")
-        filter_layout.addWidget(self.filter_btn)
-        filter_layout.addStretch()
+        _fa = Qt.AlignmentFlag.AlignVCenter
+        filter_layout.addWidget(from_block, 0, _fa)
+        filter_layout.addWidget(to_block, 0, _fa)
+        filter_layout.addWidget(unit_block, 1, _fa)
+        filter_layout.addWidget(self.filter_btn, 0, _fa)
+        filter_layout.addStretch(1)
         self.export_journal_excel_btn = _make_export_btn(FluentIcon.SAVE_AS, "Экспорт в Excel")
         self.export_journal_pdf_btn = _make_export_btn(FluentIcon.PRINT, "Экспорт в PDF")
-        filter_layout.addWidget(self.export_journal_excel_btn)
-        filter_layout.addWidget(self.export_journal_pdf_btn)
+        filter_layout.addWidget(self.export_journal_excel_btn, 0, _fa)
+        filter_layout.addWidget(self.export_journal_pdf_btn, 0, _fa)
         main_layout.addLayout(filter_layout)
 
         # Строка поиска
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("Поиск:"))
+        search_layout.setSpacing(8)
+        search_layout.addWidget(_fluent_caption_label("Поиск:"))
         self.journal_search_edit = LineEdit()
         self.journal_search_edit.setPlaceholderText(
-            "Документ, наряд, дата или наименование имущества\u2026"
+            "Документ, наряд, дата, число единиц или наименование имущества\u2026"
         )
         self.journal_search_edit.textChanged.connect(lambda _: self._search_timer.start())
         search_layout.addWidget(self.journal_search_edit)
         main_layout.addLayout(search_layout)
 
         # Плоская таблица — одна строка на операцию
-        self.journal_table = _create_fluent_table(self, 6)
+        self.journal_table = _create_fluent_table(self, 7)
         self.journal_table.setHorizontalHeaderLabels(
-            ["Дата", "Операция", "Документ", "Наряд", "Позиций", "Подразделение"]
+            [
+                "Дата",
+                "Операция",
+                "Документ",
+                "Наряд",
+                "Позиций",
+                "Кол-во ед.",
+                "Подразделение",
+            ]
         )
         hh = self.journal_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -937,7 +1093,9 @@ class JournalTab(QWidget):
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self.journal_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.journal_table.setSortingEnabled(True)
         self.journal_table.cellDoubleClicked.connect(self._on_row_double_click)
         main_layout.addWidget(self.journal_table, 1)
 
@@ -953,13 +1111,24 @@ class JournalTab(QWidget):
             self.filter_unit_combo.addItem(u["name"], None, u["id"])
 
     def _on_row_double_click(self, row: int, _col: int):
-        if 0 <= row < len(self._ops):
-            dlg = OperationDetailDialog(self._ops[row], self.db, self)
-            dlg.exec()
-            if dlg.was_reversed:
-                self.load_journal()
-                if self._on_data_changed:
-                    self._on_data_changed()
+        it = self.journal_table.item(row, 0)
+        if not it:
+            return
+        raw = it.data(Qt.ItemDataRole.UserRole)
+        if raw is None:
+            return
+        try:
+            op_idx = int(raw)
+        except (TypeError, ValueError):
+            return
+        if not (0 <= op_idx < len(self._ops)):
+            return
+        dlg = OperationDetailDialog(self._ops[op_idx], self.db, self)
+        dlg.exec()
+        if dlg.was_reversed:
+            self.load_journal()
+            if self._on_data_changed:
+                self._on_data_changed()
 
     def load_journal(self):
         date_from = self.date_from_edit.date().toString("yyyy-MM-dd")
@@ -996,35 +1165,73 @@ class JournalTab(QWidget):
             groups[key]["rows"].append(row)
 
         self._ops = list(groups.values())
-        self.journal_table.setRowCount(0)
+        table = self.journal_table
+        hh = table.horizontalHeader()
+        prev_section = hh.sortIndicatorSection()
+        prev_order = hh.sortIndicatorOrder()
+        had_sort = table.isSortingEnabled()
+
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
 
         for i, op in enumerate(self._ops):
             op_text = "Приход" if op["op_type"] == "IN" else "Выдача"
             wo = (op.get("work_order_no") or "").strip()
-            self.journal_table.insertRow(i)
-            self.journal_table.setItem(i, 0, QTableWidgetItem(op["date"]))
-            self.journal_table.setItem(i, 1, QTableWidgetItem(op_text))
-            self.journal_table.setItem(i, 2, QTableWidgetItem(op["doc_name"] or ""))
-            self.journal_table.setItem(i, 3, QTableWidgetItem(wo))
-            self.journal_table.setItem(i, 4, QTableWidgetItem(str(len(op["rows"]))))
-            self.journal_table.setItem(i, 5, QTableWidgetItem(op["unit_name"]))
+            n_pos = len(op["rows"])
+            n_units = _journal_operation_total_units(op["rows"])
+            table.insertRow(i)
+            table.setItem(i, 0, _journal_row_item(op["date"], i))
+            table.setItem(i, 1, _journal_row_item(op_text, i))
+            table.setItem(i, 2, _journal_row_item(op["doc_name"] or "", i))
+            table.setItem(i, 3, _journal_row_item(wo, i))
+            cnt_it = _IntSortTableItem(str(n_pos))
+            cnt_it.setData(Qt.ItemDataRole.UserRole, i)
+            table.setItem(i, 4, cnt_it)
+            units_it = _IntSortTableItem(str(n_units))
+            units_it.setData(Qt.ItemDataRole.UserRole, i)
+            table.setItem(i, 5, units_it)
+            table.setItem(i, 6, _journal_row_item(op["unit_name"], i))
+
+        table.setSortingEnabled(True)
+        if had_sort and self._ops and 0 <= prev_section < table.columnCount():
+            hh.setSortIndicator(prev_section, prev_order)
+            table.sortByColumn(prev_section, prev_order)
 
         self._apply_journal_filter()
 
     def _apply_journal_filter(self):
         text = self.journal_search_edit.text().strip().lower()
-        for i, op in enumerate(self._ops):
+        table = self.journal_table
+        for r in range(table.rowCount()):
+            it0 = table.item(r, 0)
+            if not it0:
+                continue
+            raw = it0.data(Qt.ItemDataRole.UserRole)
+            try:
+                op_idx = int(raw) if raw is not None else -1
+            except (TypeError, ValueError):
+                op_idx = -1
+            if not (0 <= op_idx < len(self._ops)):
+                continue
+            op = self._ops[op_idx]
             if not text:
-                self.journal_table.setRowHidden(i, False)
+                table.setRowHidden(r, False)
                 continue
             wo_low = (op.get("work_order_no") or "").lower()
+            n_units = _journal_operation_total_units(op["rows"])
+            n_pos = len(op["rows"])
+            num_ok = False
+            if text.isdigit():
+                q = int(text)
+                num_ok = q == n_units or q == n_pos
             match = (
                 text in (op["doc_name"] or "").lower()
                 or text in wo_low
                 or text in op["date"].lower()
+                or num_ok
                 or any(text in (row["item_name"] or "").lower() for row in op["rows"])
             )
-            self.journal_table.setRowHidden(i, not match)
+            table.setRowHidden(r, not match)
 
     def on_export_journal_excel(self):
         path, _ = QFileDialog.getSaveFileName(self, "Экспорт журнала", "", "Excel (*.xlsx)")
@@ -1219,11 +1426,14 @@ class BasketDialog(QDialog):
         self.post_btn = PushButton("Провести операцию →")
         self.post_btn.setObjectName("PostBtnIn" if self._op_type == "IN" else "PostBtnOut")
         close_btn = PushButton("Отмена")
-
-        footer_layout.addWidget(self.clear_btn)
+        _bf_h = 32
+        for btn in (self.clear_btn, close_btn, self.post_btn):
+            btn.setFixedHeight(_bf_h)
+        _bf_align = Qt.AlignmentFlag.AlignVCenter
+        footer_layout.addWidget(self.clear_btn, 0, _bf_align)
         footer_layout.addStretch()
-        footer_layout.addWidget(close_btn)
-        footer_layout.addWidget(self.post_btn)
+        footer_layout.addWidget(close_btn, 0, _bf_align)
+        footer_layout.addWidget(self.post_btn, 0, _bf_align)
         root.addWidget(footer_frame)
 
         self.clear_btn.clicked.connect(self._on_clear)
@@ -1239,7 +1449,8 @@ class BasketDialog(QDialog):
         self.clear_btn.setEnabled(has_items)
 
         n = len(self._basket)
-        self.count_lbl.setText(f"— {n} поз." if n else "")
+        u = _basket_total_units(self._basket)
+        self.count_lbl.setText(f"— {u} ед. · {n} поз." if n else "")
 
         for i, pos in enumerate(self._basket):
             self.table.insertRow(i)
@@ -1339,7 +1550,8 @@ class BasketDialog(QDialog):
 
         self._basket_ref.clear()
         n = len(self._basket)
-        QMessageBox.information(self, "Успех", f"Операция проведена: {n} поз.")
+        u = _basket_total_units(self._basket)
+        QMessageBox.information(self, "Успех", f"Операция проведена: {u} ед. ({n} поз.)")
         self.accept()
 
 
@@ -1371,36 +1583,35 @@ class OperationsTab(QWidget):
 
         # ── Строка: тип операции + наряд + корзина ──
         op_bar = QHBoxLayout()
-        self.in_radio = RadioButton("ПРИХОД")
-        self.out_radio = RadioButton("ВЫДАЧА")
-        self.in_radio.setChecked(True)
-        self.op_group = QButtonGroup(self)
-        self.op_group.addButton(self.in_radio)
-        self.op_group.addButton(self.out_radio)
-        op_bar.addWidget(self.in_radio)
-        op_bar.addWidget(self.out_radio)
+        self.op_segment = OpTypeSegmentedWidget(self)
+        self.op_segment.addItem("in", "ПРИХОД")
+        self.op_segment.addItem("out", "ВЫДАЧА")
+        self.op_segment.setCurrentItem("in")
+        self.op_segment.setFixedHeight(32)
+        self.op_segment.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        op_bar.addWidget(self.op_segment, alignment=Qt.AlignmentFlag.AlignVCenter)
         op_bar.addSpacing(12)
-        op_bar.addWidget(QLabel("Наряд:"))
         self.wo_combo = ComboBox()
         self.wo_combo.setMinimumWidth(220)
+        op_bar.addWidget(_fluent_caption_label("Наряд:", self.wo_combo))
         op_bar.addWidget(self.wo_combo, 1)
         self.wo_load_btn = PushButton("Загрузить")
-        op_bar.addWidget(self.wo_load_btn)
+        op_bar.addWidget(self.wo_load_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         op_bar.addSpacing(12)
         self.basket_btn = PushButton("Корзина")
         self.basket_btn.setObjectName("BasketBtn")
-        self.basket_btn.setMinimumWidth(130)
-        op_bar.addWidget(self.basket_btn)
+        self.basket_btn.setMinimumWidth(200)
+        self.basket_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        op_bar.addWidget(self.basket_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(op_bar)
 
         # ── Поиск ──
         search_row = QHBoxLayout()
-        search_row.addWidget(QLabel("Поиск:"))
+        search_row.setSpacing(8)
         self.search_edit = LineEdit()
         self.search_edit.setPlaceholderText("Название или Н/Н код\u2026")
-        self.search_btn = PushButton("Найти")
+        search_row.addWidget(_fluent_caption_label("Поиск:", self.search_edit))
         search_row.addWidget(self.search_edit, 1)
-        search_row.addWidget(self.search_btn)
         root.addLayout(search_row)
 
         self.results_table = _create_fluent_table(self, 4)
@@ -1441,11 +1652,11 @@ class OperationsTab(QWidget):
         qty_sn_row.setSpacing(8)
 
         # Лейбл + счётчик количества (виджет [−] число [+])
-        self.qty_label = QLabel("Количество:")
-        self.qty_spin = QuantitySpinBox()
+        self.qty_spin = SpinBox()
         self.qty_spin.setRange(1, 1_000_000)
         self.qty_spin.setValue(1)
         self.qty_spin.setFixedWidth(120)
+        self.qty_label = _fluent_caption_label("Количество:", self.qty_spin)
         qty_pair = QWidget()
         qty_pair.setObjectName("QtyPair")
         qty_pair_layout = QHBoxLayout(qty_pair)
@@ -1454,9 +1665,9 @@ class OperationsTab(QWidget):
         qty_pair_layout.addWidget(self.qty_label)
         qty_pair_layout.addWidget(self.qty_spin)
 
-        self.sn_label = QLabel("S/N:")
         self.sn_edit = LineEdit()
         self.sn_edit.setPlaceholderText("Заводской номер")
+        self.sn_label = _fluent_caption_label("S/N:", self.sn_edit)
         self._sn_available = []
         self._sn_selected = []
         self.sn_dropdown_btn = PushButton("Выбрать заводские номера")
@@ -1479,13 +1690,12 @@ class OperationsTab(QWidget):
         root.addWidget(add_panel)
 
         # Сигналы
-        self.search_btn.clicked.connect(self.on_search)
-        self.search_edit.returnPressed.connect(self.on_search)
+        self.search_edit.returnPressed.connect(self._flush_live_search)
         self.search_edit.textChanged.connect(self._on_search_text_changed)
         self.results_table.cellClicked.connect(self.on_result_clicked)
         self.add_btn.clicked.connect(self.on_add_to_basket)
         self.basket_btn.clicked.connect(self._open_basket)
-        self.out_radio.toggled.connect(lambda checked: checked and self._on_op_type_changed())
+        self.op_segment.currentItemChanged.connect(lambda _k: self._on_op_type_changed())
         self.wo_load_btn.clicked.connect(self._on_load_from_work_order)
 
         self._set_input_mode(None)
@@ -1513,7 +1723,7 @@ class OperationsTab(QWidget):
             self.wo_combo.addItem(label, None, wo["id"])
 
     def _on_load_from_work_order(self):
-        if self.in_radio.isChecked():
+        if self.op_segment.currentRouteKey() == "in":
             QMessageBox.information(self, "Наряд", "Загрузка из наряда доступна только в режиме «Выдача».")
             return
         wo_id = self.wo_combo.currentData()
@@ -1557,7 +1767,7 @@ class OperationsTab(QWidget):
                 self._basket.append(dict(pos))
 
         self._update_basket_btn()
-        if self.out_radio.isChecked():
+        if self.op_segment.currentRouteKey() == "out":
             self._do_search(self.search_edit.text().strip())
 
     def _update_sn_dropdown_text(self):
@@ -1577,7 +1787,13 @@ class OperationsTab(QWidget):
         dlg.setMinimumSize(320, 360)
         layout = QVBoxLayout(dlg)
         if not available_to_show:
-            layout.addWidget(QLabel("Все S/N по этой позиции уже в корзине.\nУдалите позиции из корзины, чтобы снова выбрать их здесь."))
+            _sn_empty = QLabel(
+                "Все S/N по этой позиции уже в корзине.\n"
+                "Удалите позиции из корзины, чтобы снова выбрать их здесь."
+            )
+            _sn_empty.setObjectName("JournalHint")
+            _sn_empty.setWordWrap(True)
+            layout.addWidget(_sn_empty)
             btn_close = PushButton("Закрыть")
             btn_close.clicked.connect(dlg.accept)
             layout.addWidget(btn_close)
@@ -1612,7 +1828,7 @@ class OperationsTab(QWidget):
     def _set_input_mode(self, item_type: str | None):
         is_qty   = item_type == "qty"
         is_sn    = item_type == "serial"
-        is_out   = self.out_radio.isChecked()
+        is_out   = self.op_segment.currentRouteKey() == "out"
 
         # Количество — только для Мат. средств
         self.qty_label.setVisible(is_qty or item_type is None)
@@ -1639,7 +1855,7 @@ class OperationsTab(QWidget):
         if self.selected_variant is None or self.selected_variant.get("item_type") != "qty":
             self.qty_spin.setRange(1, 1_000_000)
             return
-        if not self.out_radio.isChecked():
+        if self.op_segment.currentRouteKey() != "out":
             self.qty_spin.setRange(1, 1_000_000)
             return
         vid = self.selected_variant["variant_id"]
@@ -1653,13 +1869,17 @@ class OperationsTab(QWidget):
 
     def _update_basket_btn(self):
         n = len(self._basket)
-        self.basket_btn.setText(f"Корзина · {n}" if n else "Корзина")
+        u = _basket_total_units(self._basket)
+        if n:
+            self.basket_btn.setText(f"Корзина · {u} ед. · {n} поз.")
+        else:
+            self.basket_btn.setText("Корзина")
         self.basket_btn.setProperty("hasItems", "true" if n > 0 else "false")
         self.basket_btn.style().unpolish(self.basket_btn)
         self.basket_btn.style().polish(self.basket_btn)
 
     def _open_basket(self):
-        op_type = "IN" if self.in_radio.isChecked() else "OUT"
+        op_type = "IN" if self.op_segment.currentRouteKey() == "in" else "OUT"
         wo_id = self.wo_combo.currentData()
         wo_unit_id = None
         wo_name = None
@@ -1710,7 +1930,7 @@ class OperationsTab(QWidget):
 
     def _do_search(self, text: str = ""):
         """Основная логика поиска. Вызывается явно или при автофильтрации."""
-        is_out = self.out_radio.isChecked()
+        is_out = self.op_segment.currentRouteKey() == "out"
         rows = self.db.search_variants(text, only_in_stock=is_out)
         rows = [dict(r) for r in rows]
         self.results_table.setSortingEnabled(False)
@@ -1743,7 +1963,7 @@ class OperationsTab(QWidget):
         """Обновить таблицу в реальном времени: в режиме ВЫДАЧА показывать доступный остаток (склад минус корзина), строку скрывать только когда остаток 0."""
         if not self._search_rows:
             return
-        if not self.out_radio.isChecked():
+        if self.op_segment.currentRouteKey() != "out":
             return
         # Сколько каждого варианта уже в корзине (для qty — сумма qty, для serial — количество S/N)
         basket_by_variant = {}
@@ -1796,27 +2016,38 @@ class OperationsTab(QWidget):
             self.selected_label.setText("Выберите товар из результатов поиска")
             self._set_input_mode(None)
 
-    def on_search(self):
-        """Поиск по кнопке / Enter — работает в обоих режимах."""
+    def _ensure_live_search_timer(self) -> None:
+        if not hasattr(self, "_live_search_timer"):
+            self._live_search_timer = QTimer(self)
+            self._live_search_timer.setSingleShot(True)
+            self._live_search_timer.setInterval(250)
+            self._live_search_timer.timeout.connect(self._on_live_search_timeout)
+
+    def _on_search_text_changed(self, _text: str) -> None:
+        """Поиск при вводе (ПРИХОД и ВЫДАЧА), с дебаунсом."""
+        self._ensure_live_search_timer()
+        self._live_search_timer.start()
+
+    def _flush_live_search(self) -> None:
+        """Enter — выполнить поиск сразу, без ожидания таймера."""
+        if hasattr(self, "_live_search_timer"):
+            self._live_search_timer.stop()
+        self._on_live_search_timeout()
+
+    def _on_live_search_timeout(self) -> None:
         text = self.search_edit.text().strip()
-        if not text and self.in_radio.isChecked():
-            QMessageBox.warning(self, "Ошибка", "Введите текст для поиска.")
+        if self.op_segment.currentRouteKey() == "in" and not text:
+            self.results_table.setRowCount(0)
+            self._search_rows = []
+            self.selected_variant = None
+            self.selected_label.setText("Выберите товар из результатов поиска")
+            self._set_input_mode(None)
             return
         self._do_search(text)
 
-    def _on_search_text_changed(self, text: str):
-        """Живая фильтрация при вводе — только в режиме ВЫДАЧА (с дебаунсом)."""
-        if self.out_radio.isChecked():
-            if not hasattr(self, "_live_search_timer"):
-                self._live_search_timer = QTimer(self)
-                self._live_search_timer.setSingleShot(True)
-                self._live_search_timer.setInterval(250)
-                self._live_search_timer.timeout.connect(lambda: self._do_search(self.search_edit.text().strip()))
-            self._live_search_timer.start()
-
     def _on_op_type_changed(self):
         """При переключении типа операции — обновляем таблицу."""
-        if self.out_radio.isChecked():
+        if self.op_segment.currentRouteKey() == "out":
             # ВЫДАЧА: сразу показываем весь склад
             self._do_search(self.search_edit.text().strip())
         else:
@@ -1848,7 +2079,7 @@ class OperationsTab(QWidget):
         if vrow["item_type"] == "qty":
             self.qty_spin.setValue(1)
             self._update_qty_spin_max()
-        elif self.out_radio.isChecked():
+        elif self.op_segment.currentRouteKey() == "out":
             # ВЫДАЧА + серийный: все S/N по изделию (все варианты), список с чекбоксами в выпадающем окне
             serials = self.db.get_serials_for_item(vrow["item_id"])
             self._sn_available = [dict(s) for s in serials]
@@ -1866,12 +2097,12 @@ class OperationsTab(QWidget):
         item_type = vrow["item_type"]
 
         if item_type == "qty":
-            self.qty_spin.commit()
+            self.qty_spin.interpretText()
             qty = self.qty_spin.value()
             if qty <= 0:
                 QMessageBox.warning(self, "Ошибка", "Количество должно быть больше 0.")
                 return
-            if self.out_radio.isChecked():
+            if self.op_segment.currentRouteKey() == "out":
                 vid = vrow["variant_id"]
                 stock = self.db.get_qty_stock(vid)
                 in_basket = sum(p.get("qty", 0) for p in self._basket if p.get("variant_id") == vid)
@@ -1895,7 +2126,7 @@ class OperationsTab(QWidget):
             self._update_qty_spin_max()
         else:
             # Серийный: источник S/N зависит от режима
-            if self.out_radio.isChecked():
+            if self.op_segment.currentRouteKey() == "out":
                 # ВЫДАЧА: добавляем все отмеченные галочками S/N
                 if not self._sn_selected:
                     QMessageBox.warning(
@@ -1966,15 +2197,15 @@ class WorkOrderDialog(QDialog):
 
         self.order_no_edit = LineEdit()
         self.order_no_edit.setPlaceholderText("Например: НР-2026-001")
-        form.addRow("Номер наряда:", self.order_no_edit)
+        form.addRow(_fluent_caption_label("Номер наряда:", self.order_no_edit), self.order_no_edit)
 
         self.unit_combo = ComboBox()
         self.unit_combo.addItem("— не выбрано —", None, None)
-        form.addRow("Подразделение:", self.unit_combo)
+        form.addRow(_fluent_caption_label("Подразделение:", self.unit_combo), self.unit_combo)
 
         self.description_edit = LineEdit()
         self.description_edit.setPlaceholderText("Что нужно выдать со склада")
-        form.addRow("Описание:", self.description_edit)
+        form.addRow(_fluent_caption_label("Описание:", self.description_edit), self.description_edit)
 
         layout.addLayout(form)
 
@@ -2056,18 +2287,19 @@ class WorkOrderItemsDialog(QDialog):
         layout.addWidget(self.docs_table)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Поиск позиции:"))
+        top.setSpacing(8)
         self.search_edit = LineEdit()
         self.search_edit.setPlaceholderText("Название, Н/Н, размер\u2026")
         self.search_btn = PushButton("Найти")
-        self.qty_spin = QuantitySpinBox()
+        self.qty_spin = SpinBox()
         self.qty_spin.setRange(1, 1_000_000)
         self.qty_spin.setValue(1)
         self.qty_spin.setFixedWidth(110)
         self.add_btn = PushButton("Добавить позицию")
+        top.addWidget(_fluent_caption_label("Поиск позиции:", self.search_edit))
         top.addWidget(self.search_edit, 1)
         top.addWidget(self.search_btn)
-        top.addWidget(QLabel("Кол-во:"))
+        top.addWidget(_fluent_caption_label("Кол-во:", self.qty_spin))
         top.addWidget(self.qty_spin)
         top.addWidget(self.add_btn)
         layout.addLayout(top)
@@ -2148,6 +2380,7 @@ class WorkOrderItemsDialog(QDialog):
         if variant_id is None:
             QMessageBox.warning(self, "Состав наряда", "Выберите позицию из результатов поиска.")
             return
+        self.qty_spin.interpretText()
         qty = self.qty_spin.value()
         try:
             self.db.add_work_order_item(self.work_order["id"], variant_id, qty)
@@ -2273,9 +2506,10 @@ class WorkOrdersTab(QWidget):
         layout.setSpacing(12)
 
         top_row = QHBoxLayout()
-        top_row.addWidget(QLabel("Поиск:"))
+        top_row.setSpacing(8)
         self.search_edit = LineEdit()
         self.search_edit.setPlaceholderText("Номер наряда, подразделение, статус, описание\u2026")
+        top_row.addWidget(_fluent_caption_label("Поиск:", self.search_edit))
         top_row.addWidget(self.search_edit, 1)
         self.search_edit.textChanged.connect(lambda _: self._search_timer.start())
         layout.addLayout(top_row)
@@ -2426,10 +2660,11 @@ class StockTab(QWidget):
 
         # Поиск по складу и экспорт
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("Поиск:"))
+        search_layout.setSpacing(8)
         self.search_edit = LineEdit()
         self.search_edit.setPlaceholderText("По наименованию и номенклатурному номеру\u2026")
-        search_layout.addWidget(self.search_edit)
+        search_layout.addWidget(_fluent_caption_label("Поиск:", self.search_edit))
+        search_layout.addWidget(self.search_edit, 1)
         search_layout.addStretch()
         self.export_stock_excel_btn = _make_export_btn(FluentIcon.SAVE_AS, "Экспорт в Excel")
         self.export_stock_pdf_btn = _make_export_btn(FluentIcon.PRINT, "Экспорт в PDF")
@@ -2619,9 +2854,9 @@ class UnitsTab(QWidget):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        layout.addWidget(QLabel("Подразделения:"))
         self.list_widget = ListWidget()
         _style_fluent_list_frame(self.list_widget)
+        layout.addWidget(_fluent_caption_label("Подразделения:", self.list_widget))
         layout.addWidget(self.list_widget, 1)
 
         btn_layout = QHBoxLayout()

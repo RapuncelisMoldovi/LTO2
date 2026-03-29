@@ -501,6 +501,14 @@ class DatabaseManager:
         )
         return (cur.fetchone()["cnt"] or 0) > 0
 
+    def work_order_items_count_for_variant(self, variant_id: int) -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM work_order_items WHERE variant_id = ?",
+            (variant_id,),
+        )
+        return int(cur.fetchone()["cnt"] or 0)
+
     def delete_item(self, item_id: int):
         """Удаляет изделие и все связанные варианты, остатки и записи журнала."""
         try:
@@ -522,10 +530,11 @@ class DatabaseManager:
             raise
 
     def delete_variant(self, variant_id: int):
-        """Удаляет вариант (размер) и все связанные остатки и записи журнала."""
+        """Удаляет вариант (размер) и связанные журнал, остатки, S/N и строки нарядов."""
         try:
             self.conn.execute("BEGIN")
             cur = self.conn.cursor()
+            cur.execute("DELETE FROM work_order_items WHERE variant_id = ?", (variant_id,))
             cur.execute("DELETE FROM journal WHERE variant_id = ?", (variant_id,))
             cur.execute("DELETE FROM stock_qty WHERE variant_id = ?", (variant_id,))
             cur.execute("DELETE FROM stock_serial WHERE variant_id = ?", (variant_id,))
