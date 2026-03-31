@@ -9,6 +9,9 @@ from fluent_qss import application_stylesheet
 from database import (
     DatabaseManager,
     JOURNAL_EXPORT_ROW_LIMIT,
+    NOMENCLATURE_CATEGORIES,
+    NOMENCLATURE_CATEGORY_FLIGHT,
+    normalize_nomenclature_category,
     _export_journal_excel,
     _export_journal_pdf,
     _export_stock_excel,
@@ -372,7 +375,13 @@ def _safe_sort_tree_widget(tree: TreeWidget, column: int, order: Qt.SortOrder) -
 
 
 class NewItemDialog(QDialog):
-    def __init__(self, db: "DatabaseManager", parent=None, edit_item_id: int | None = None):
+    def __init__(
+        self,
+        db: "DatabaseManager",
+        parent=None,
+        edit_item_id: int | None = None,
+        default_category: str | None = None,
+    ):
         super().__init__(parent)
         self.db = db
         self.edit_item_id = edit_item_id
@@ -386,6 +395,17 @@ class NewItemDialog(QDialog):
                 self.uom_edit.setText(row["uom"] or "шт")
                 self.qty_radio.setChecked(row["type"] == "qty")
                 self.serial_radio.setChecked(row["type"] == "serial")
+                try:
+                    cval = row["category"]
+                except (KeyError, IndexError, TypeError):
+                    cval = None
+                cat = normalize_nomenclature_category(cval)
+                idx = self.category_combo.findText(cat)
+                self.category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        else:
+            dc = normalize_nomenclature_category(default_category)
+            idx = self.category_combo.findText(dc)
+            self.category_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -404,6 +424,14 @@ class NewItemDialog(QDialog):
         form.addRow(_fluent_caption_label("Название:", self.name_edit), self.name_edit)
         form.addRow(_fluent_caption_label("Н/Н (базовый):", self.base_code_edit), self.base_code_edit)
         form.addRow(_fluent_caption_label("Ед. изм.:", self.uom_edit), self.uom_edit)
+
+        self.category_combo = ComboBox()
+        for c in NOMENCLATURE_CATEGORIES:
+            self.category_combo.addItem(c)
+        form.addRow(
+            _fluent_caption_label("Категория:", self.category_combo),
+            self.category_combo,
+        )
 
         type_layout = QHBoxLayout()
         self.qty_radio = RadioButton("Мат. средства")
@@ -439,10 +467,11 @@ class NewItemDialog(QDialog):
         base_code = self.base_code_edit.text().strip()
         uom = self.uom_edit.text().strip()
         item_type = "qty" if self.qty_radio.isChecked() else "serial"
-        return name, base_code, uom, item_type
+        category = normalize_nomenclature_category(self.category_combo.currentText())
+        return name, base_code, uom, item_type, category
 
     def accept(self):
-        name, base_code, uom, _ = self.get_data()
+        name, base_code, uom, _, __ = self.get_data()
         if not name or not uom:
             QMessageBox.warning(self, "Ошибка", "Заполните все поля.")
             return
@@ -531,13 +560,31 @@ class NomenclatureTab(QWidget):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        search_row = QHBoxLayout()
-        search_row.setSpacing(8)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        self.category_combo = ComboBox()
+        self.category_combo.setMinimumWidth(220)
+        for c in NOMENCLATURE_CATEGORIES:
+            self.category_combo.addItem(c)
+        saved_cat = QSettings("LTO2", "App").value(
+            NOMENCLATURE_CATEGORY_SETTINGS_KEY,
+            NOMENCLATURE_CATEGORY_FLIGHT,
+            type=str,
+        )
+        self.category_combo.blockSignals(True)
+        idx = self.category_combo.findText(saved_cat)
+        self.category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.category_combo.blockSignals(False)
+        top_row.addWidget(_fluent_caption_label("Категория:", self.category_combo))
+        top_row.addWidget(self.category_combo)
+        top_row.addSpacing(16)
+
         self.search_edit = LineEdit()
         self.search_edit.setPlaceholderText("По наименованию и номенклатурному номеру…")
-        search_row.addWidget(_fluent_caption_label("Поиск:", self.search_edit))
-        search_row.addWidget(self.search_edit, 1)
-        layout.addLayout(search_row)
+        top_row.addWidget(_fluent_caption_label("Поиск:", self.search_edit))
+        top_row.addWidget(self.search_edit, 1)
+        layout.addLayout(top_row)
+        self.category_combo.currentIndexChanged.connect(self._on_nom_category_changed)
 
         self.tree = TreeWidget()
         self.tree.setColumnCount(4)
@@ -581,6 +628,13 @@ class NomenclatureTab(QWidget):
         self.edit_item_btn.clicked.connect(self.on_edit_item)
         self.delete_item_btn.clicked.connect(self.on_delete_item)
         self.import_excel_btn.clicked.connect(self.on_import_from_excel)
+
+    def _on_nom_category_changed(self, _index: int) -> None:
+        QSettings("LTO2", "App").setValue(
+            NOMENCLATURE_CATEGORY_SETTINGS_KEY,
+            self.category_combo.currentText(),
+        )
+        self.reload()
 
     def _selected_item_id(self) -> int | None:
         """Id изделия: для строки изделия или для выбранного дочернего размера (через родителя)."""
@@ -730,7 +784,8 @@ class NomenclatureTab(QWidget):
 
     def reload(self):
         self.tree.clear()
-        for row in self.db.get_nomenclature_tree_data():
+        cat = normalize_nomenclature_category(self.category_combo.currentText())
+        for row in self.db.get_nomenclature_tree_data(category=cat):
             top = QTreeWidgetItem(self.tree)
             top.setText(0, row["base_code"])
             top.setText(1, row["name"])
@@ -782,11 +837,15 @@ class NomenclatureTab(QWidget):
         return False
 
     def on_new_item(self):
-        dlg = NewItemDialog(self.db, self)
+        dlg = NewItemDialog(
+            self.db,
+            self,
+            default_category=self.category_combo.currentText(),
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            name, base_code, uom, item_type = dlg.get_data()
+            name, base_code, uom, item_type, category = dlg.get_data()
             try:
-                new_id = self.db.add_item(name, base_code, uom, item_type)
+                new_id = self.db.add_item(name, base_code, uom, item_type, category=category)
                 self.db.add_variant(new_id, "Без размера", base_code, item_type)
             except sqlite3.IntegrityError as e:
                 logger.warning("Add item failed: %s", e)
@@ -805,9 +864,11 @@ class NomenclatureTab(QWidget):
             return
         dlg = NewItemDialog(self.db, self, edit_item_id=item_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            name, base_code, uom, item_type = dlg.get_data()
+            name, base_code, uom, item_type, category = dlg.get_data()
             try:
-                self.db.update_item(item_id, name, base_code, uom, item_type)
+                self.db.update_item(
+                    item_id, name, base_code, uom, item_type, category=category
+                )
             except sqlite3.IntegrityError as e:
                 logger.warning("Update item failed: %s", e)
                 QMessageBox.warning(self, "Ошибка", "Не удалось сохранить изделие (возможно, дубликат Н/Н).")
@@ -861,7 +922,10 @@ class NomenclatureTab(QWidget):
         )
         if not path:
             return
-        items_added, variants_added, errors = self.db.import_nomenclature_from_excel(path)
+        items_added, variants_added, errors = self.db.import_nomenclature_from_excel(
+            path,
+            category=self.category_combo.currentText(),
+        )
         if items_added == 0 and variants_added == 0 and not errors:
             QMessageBox.information(self, "Импорт", "В файле нет данных для импорта.")
             return
@@ -1742,7 +1806,12 @@ class OperationsTab(QWidget):
         self.search_edit.returnPressed.connect(self._flush_live_search)
         self.search_edit.textChanged.connect(self._on_search_text_changed)
         self.results_table.cellClicked.connect(self.on_result_clicked)
+        self.results_table.itemActivated.connect(self._on_result_activated)
         self.add_btn.clicked.connect(self.on_add_to_basket)
+        _qty_le = self.qty_spin.lineEdit()
+        if _qty_le is not None:
+            _qty_le.returnPressed.connect(self.on_add_to_basket)
+        self.sn_edit.returnPressed.connect(self.on_add_to_basket)
         self.basket_btn.clicked.connect(self._open_basket)
         self.op_segment.currentItemChanged.connect(lambda _k: self._on_op_type_changed())
         self.wo_load_btn.clicked.connect(self._on_load_from_work_order)
@@ -2132,6 +2201,14 @@ class OperationsTab(QWidget):
             self._set_input_mode(None)
 
     def on_result_clicked(self, row: int, _col: int):
+        """Выбор строки мышью — без автопереноса фокуса на количество/S/N."""
+        self._select_result_row(row, focus_input=False)
+
+    def _on_result_activated(self, item: QTableWidgetItem):
+        """Enter или двойной клик по строке — выбор и фокус на количество или S/N."""
+        self._select_result_row(item.row(), focus_input=True)
+
+    def _select_result_row(self, row: int, *, focus_input: bool) -> None:
         if row < 0:
             return
         it = self.results_table.item(row, 0)
@@ -2162,6 +2239,21 @@ class OperationsTab(QWidget):
                 self.add_btn.setEnabled(False)
         else:
             self.sn_edit.clear()
+        if focus_input:
+            QTimer.singleShot(0, self._focus_input_after_result_row)
+
+    def _focus_input_after_result_row(self) -> None:
+        """После активации строки (Enter) — фокус на количество, поле S/N или кнопку выбора S/N."""
+        if self.selected_variant is None:
+            return
+        it = self.selected_variant["item_type"]
+        if it == "qty":
+            self.qty_spin.setFocus(Qt.FocusReason.TabFocusReason)
+        elif it == "serial":
+            if self.op_segment.currentRouteKey() == "out":
+                self.sn_dropdown_btn.setFocus(Qt.FocusReason.TabFocusReason)
+            else:
+                self.sn_edit.setFocus(Qt.FocusReason.TabFocusReason)
 
     def on_add_to_basket(self):
         if self.selected_variant is None:
@@ -2246,6 +2338,11 @@ class OperationsTab(QWidget):
 
         self._update_basket_btn()
         self._refresh_results_table()
+        QTimer.singleShot(0, self._focus_results_table_for_next_position)
+
+    def _focus_results_table_for_next_position(self) -> None:
+        """После добавления в корзину — фокус на таблицу для следующей позиции (Enter → кол-во → Enter)."""
+        self.results_table.setFocus(Qt.FocusReason.TabFocusReason)
 
 
 class WorkOrderDialog(QDialog):
@@ -2386,6 +2483,7 @@ class WorkOrderItemsDialog(QDialog):
         hs.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.search_table.setColumnWidth(2, 120)
         self.search_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.search_table.itemActivated.connect(self._on_search_row_activated)
         layout.addWidget(self.search_table, 1)
 
         lbl = QLabel("Позиции наряда")
@@ -2422,9 +2520,20 @@ class WorkOrderItemsDialog(QDialog):
         self.search_btn.clicked.connect(self.on_search)
         self.search_edit.returnPressed.connect(self.on_search)
         self.add_btn.clicked.connect(self.on_add_item)
+        _wo_qty_le = self.qty_spin.lineEdit()
+        if _wo_qty_le is not None:
+            _wo_qty_le.returnPressed.connect(self.on_add_item)
         self.edit_qty_btn.clicked.connect(self.on_edit_qty)
         self.remove_btn.clicked.connect(self.on_remove_item)
         close_btn.clicked.connect(self.accept)
+
+    def _on_search_row_activated(self, item: QTableWidgetItem) -> None:
+        """Enter по строке поиска — выделить и перенести фокус на поле количества."""
+        self.search_table.selectRow(item.row())
+        QTimer.singleShot(0, self._focus_qty_spin_work_order)
+
+    def _focus_qty_spin_work_order(self) -> None:
+        self.qty_spin.setFocus(Qt.FocusReason.TabFocusReason)
 
     def on_search(self):
         text = self.search_edit.text().strip()
@@ -2462,6 +2571,10 @@ class WorkOrderItemsDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", f"Не удалось добавить позицию:\n{e}")
             return
         self.reload_items()
+        QTimer.singleShot(0, self._focus_search_table_after_add)
+
+    def _focus_search_table_after_add(self) -> None:
+        self.search_table.setFocus(Qt.FocusReason.TabFocusReason)
 
     def reload_items(self):
         docs = self.db.get_work_order_issue_documents(self.work_order["id"])
@@ -3010,6 +3123,7 @@ class UnitsTab(QWidget):
 
 
 THEME_SETTINGS_KEY = "theme"  # "light" | "dark"
+NOMENCLATURE_CATEGORY_SETTINGS_KEY = "nomenclature_category"
 
 
 class _FluentPage(QWidget):

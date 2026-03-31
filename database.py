@@ -6,6 +6,34 @@ from itertools import groupby
 
 logger = logging.getLogger("LTO.database")
 
+# Категории номенклатуры (отображаются в UI как есть).
+NOMENCLATURE_CATEGORY_FLIGHT = "лётное снаряжение"
+NOMENCLATURE_CATEGORY_PARACHUTE = "парашютно-десантное"
+NOMENCLATURE_CATEGORIES: tuple[str, ...] = (
+    NOMENCLATURE_CATEGORY_FLIGHT,
+    NOMENCLATURE_CATEGORY_PARACHUTE,
+)
+
+
+def normalize_nomenclature_category(value: str | None) -> str:
+    """Возвращает допустимую категорию или категорию по умолчанию."""
+    s = (value or "").strip()
+    if s in NOMENCLATURE_CATEGORIES:
+        return s
+    return NOMENCLATURE_CATEGORY_FLIGHT
+
+
+def _sqlite_py_lower(value: str | bytes | None) -> str:
+    """Регистрируется в SQLite: нижний регистр через Python (кириллица и пр.). Встроенный lower() в SQLite ASCII-only."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="replace").lower()
+        except Exception:
+            return ""
+    return str(value).lower()
+
 
 class DatabaseManager:
     def __init__(self, path: str):
@@ -13,6 +41,7 @@ class DatabaseManager:
         try:
             self.conn = sqlite3.connect(self.path)
             self.conn.row_factory = sqlite3.Row
+            self.conn.create_function("py_lower", 1, _sqlite_py_lower)
             self._init_db()
             self.conn.execute("PRAGMA foreign_keys = ON")
         except Exception as e:
@@ -178,6 +207,15 @@ class DatabaseManager:
             cur.execute("ALTER TABLE journal ADD COLUMN work_order_id INTEGER REFERENCES work_orders(id)")
         self.conn.commit()
 
+        # Категория номенклатуры (лётное / парашютно-десантное и др.)
+        cur.execute("PRAGMA table_info(items)")
+        item_cols = [r[1] for r in cur.fetchall()]
+        if "category" not in item_cols:
+            cur.execute(
+                "ALTER TABLE items ADD COLUMN category TEXT NOT NULL DEFAULT 'лётное снаряжение'"
+            )
+        self.conn.commit()
+
         # Миграция: переименование статусов work_orders (ж → м род)
         cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_orders'")
         create_sql = (cur.fetchone() or [None])[0] or ""
@@ -237,33 +275,59 @@ class DatabaseManager:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_date ON journal(date)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_work_order ON journal(work_order_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_variants_item ON variants(item_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_items_category ON items(category)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_serial_variant ON stock_serial(variant_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_work_order_items_wo ON work_order_items(work_order_id)")
         self.conn.commit()
 
     # --- Items & Variants ---
 
-    def get_items(self):
+    def get_items(self, category: str | None = None):
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            SELECT i.id, i.name, i.base_code, i.uom, i.type
-            FROM items i
-            ORDER BY i.name COLLATE NOCASE
-            """
-        )
+        if category:
+            cur.execute(
+                """
+                SELECT i.id, i.name, i.base_code, i.uom, i.type, i.category
+                FROM items i
+                WHERE i.category = ?
+                ORDER BY i.name COLLATE NOCASE
+                """,
+                (normalize_nomenclature_category(category),),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT i.id, i.name, i.base_code, i.uom, i.type, i.category
+                FROM items i
+                ORDER BY i.name COLLATE NOCASE
+                """
+            )
         return cur.fetchall()
 
-    def add_item(self, name: str, base_code: str, uom: str, item_type: str):
+    def add_item(
+        self,
+        name: str,
+        base_code: str,
+        uom: str,
+        item_type: str,
+        category: str | None = None,
+    ):
+        cat = normalize_nomenclature_category(category)
         try:
             self.conn.execute("BEGIN")
             cur = self.conn.cursor()
             cur.execute(
-                "INSERT INTO items(name, base_code, uom, type) VALUES (?, ?, ?, ?)",
-                (name.strip(), base_code.strip(), uom.strip(), item_type),
+                "INSERT INTO items(name, base_code, uom, type, category) VALUES (?, ?, ?, ?, ?)",
+                (name.strip(), base_code.strip(), uom.strip(), item_type, cat),
             )
             iid = cur.lastrowid
-            self._audit("ITEM_INSERT", "items", iid, f"name={name.strip()} base_code={base_code.strip()}", commit=False)
+            self._audit(
+                "ITEM_INSERT",
+                "items",
+                iid,
+                f"name={name.strip()} base_code={base_code.strip()} category={cat}",
+                commit=False,
+            )
             self.conn.commit()
             return iid
         except Exception:
@@ -283,25 +347,46 @@ class DatabaseManager:
         )
         return cur.fetchall()
 
-    def get_nomenclature_tree_data(self) -> list[dict]:
+    def get_nomenclature_tree_data(self, category: str | None = None) -> list[dict]:
         """Изделия и все варианты одним запросом (без N+1 к get_variants_for_item)."""
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            SELECT
-                i.id AS item_id,
-                i.name AS item_name,
-                i.base_code,
-                i.uom,
-                i.type AS item_type,
-                v.id AS variant_id,
-                v.size_name,
-                v.full_code
-            FROM items i
-            LEFT JOIN variants v ON v.item_id = i.id
-            ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
-            """
-        )
+        cat = normalize_nomenclature_category(category) if category else None
+        if cat:
+            cur.execute(
+                """
+                SELECT
+                    i.id AS item_id,
+                    i.name AS item_name,
+                    i.base_code,
+                    i.uom,
+                    i.type AS item_type,
+                    v.id AS variant_id,
+                    v.size_name,
+                    v.full_code
+                FROM items i
+                LEFT JOIN variants v ON v.item_id = i.id
+                WHERE i.category = ?
+                ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
+                """,
+                (cat,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT
+                    i.id AS item_id,
+                    i.name AS item_name,
+                    i.base_code,
+                    i.uom,
+                    i.type AS item_type,
+                    v.id AS variant_id,
+                    v.size_name,
+                    v.full_code
+                FROM items i
+                LEFT JOIN variants v ON v.item_id = i.id
+                ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
+                """
+            )
         rows = cur.fetchall()
         out: list[dict] = []
         current: dict | None = None
@@ -365,6 +450,7 @@ class DatabaseManager:
         file_path: str,
         *,
         skip_header_row: bool = True,
+        category: str | None = None,
     ) -> tuple[int, int, list[str]]:
         """
         Импорт номенклатуры из Excel.
@@ -372,6 +458,7 @@ class DatabaseManager:
         E пусто — материальные средства (qty), без заводского номера при поступлении/выдаче.
         E = «sn» — основные средства (serial), требуется заводской номер при поступлении и выдаче.
         """
+        import_category = normalize_nomenclature_category(category)
         try:
             import openpyxl
         except ImportError:
@@ -446,7 +533,9 @@ class DatabaseManager:
             item_type = _excel_type_to_item_type(base_row[4] if len(base_row) > 4 else None)
 
             try:
-                item_id = self.add_item(name, base_code, uom, item_type)
+                item_id = self.add_item(
+                    name, base_code, uom, item_type, category=import_category
+                )
                 items_added += 1
             except sqlite3.IntegrityError as e:
                 errors.append(f"«{name}»: не удалось добавить изделие — {e}")
@@ -470,15 +559,34 @@ class DatabaseManager:
 
         return items_added, variants_added, errors
 
-    def update_item(self, item_id: int, name: str, base_code: str, uom: str, item_type: str):
+    def update_item(
+        self,
+        item_id: int,
+        name: str,
+        base_code: str,
+        uom: str,
+        item_type: str,
+        category: str | None = None,
+    ):
+        cat = normalize_nomenclature_category(category)
         try:
             self.conn.execute("BEGIN")
             cur = self.conn.cursor()
             cur.execute(
-                "UPDATE items SET name = ?, base_code = ?, uom = ?, type = ? WHERE id = ?",
-                (name.strip(), base_code.strip(), uom.strip(), item_type, item_id),
+                """
+                UPDATE items
+                SET name = ?, base_code = ?, uom = ?, type = ?, category = ?
+                WHERE id = ?
+                """,
+                (name.strip(), base_code.strip(), uom.strip(), item_type, cat, item_id),
             )
-            self._audit("ITEM_UPDATE", "items", item_id, f"name={name.strip()} base_code={base_code.strip()}", commit=False)
+            self._audit(
+                "ITEM_UPDATE",
+                "items",
+                item_id,
+                f"name={name.strip()} base_code={base_code.strip()} category={cat}",
+                commit=False,
+            )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -656,7 +764,7 @@ class DatabaseManager:
 
     def get_work_orders(self, search_text: str = ""):
         cur = self.conn.cursor()
-        pattern = f"%{search_text.strip()}%"
+        pattern = f"%{search_text.strip().lower()}%"
         cur.execute(
             """
             SELECT
@@ -670,10 +778,10 @@ class DatabaseManager:
             FROM work_orders wo
             LEFT JOIN units u ON u.id = wo.unit_id
             WHERE
-                wo.order_no LIKE ?
-                OR COALESCE(wo.description, '') LIKE ?
-                OR COALESCE(u.name, '') LIKE ?
-                OR wo.status LIKE ?
+                py_lower(wo.order_no) LIKE ?
+                OR py_lower(COALESCE(wo.description, '')) LIKE ?
+                OR py_lower(COALESCE(u.name, '')) LIKE ?
+                OR py_lower(wo.status) LIKE ?
             ORDER BY wo.id DESC
             """,
             (pattern, pattern, pattern, pattern),
@@ -884,7 +992,7 @@ class DatabaseManager:
     # --- Search & Info ---
 
     def search_variants(self, text: str, only_in_stock: bool = False):
-        pattern = f"%{text.strip()}%"
+        pattern = f"%{text.strip().lower()}%"
         cur = self.conn.cursor()
         cur.execute(
             """
@@ -903,10 +1011,12 @@ class DatabaseManager:
             FROM variants v
             JOIN items i ON v.item_id = i.id
             LEFT JOIN stock_qty sq ON sq.variant_id = v.id
-            WHERE v.full_code LIKE ? OR i.name LIKE ?
+            WHERE py_lower(v.full_code) LIKE ?
+               OR py_lower(i.name) LIKE ?
+               OR py_lower(COALESCE(v.size_name, '')) LIKE ?
             ORDER BY i.name COLLATE NOCASE, v.size_name COLLATE NOCASE
             """,
-            (pattern, pattern),
+            (pattern, pattern, pattern),
         )
         rows = cur.fetchall()
         if only_in_stock:
