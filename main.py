@@ -22,7 +22,7 @@ from PyQt6.QtCore import Qt, QRectF, QSize, QDate, QTimer, QSettings
 from PyQt6.QtGui import QCloseEvent, QIcon, QFontDatabase, QFont, QColor, QPainter
 from qfluentwidgets import (
     ComboBox,
-    DateEdit,
+    FastCalendarPicker,
     FluentIcon,
     FluentWindow,
     LineEdit,
@@ -50,7 +50,6 @@ from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QButtonGroup,
-    QCalendarWidget,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -182,32 +181,12 @@ def _setup_logging():
     )
 
 
-def _patch_calendar_arrows(date_edit) -> None:
-    """Заменяет системные стрелки месяца в календаре на иконки Fluent."""
-    cal = date_edit.calendarWidget()
-    w, h = 14, 18
-    for name, fluent_icon in [
-        ("qt_calendar_prevmonth", FluentIcon.CARE_LEFT_SOLID),
-        ("qt_calendar_nextmonth", FluentIcon.CARE_RIGHT_SOLID),
-    ]:
-        btn = cal.findChild(QToolButton, name)
-        if btn:
-            btn.setArrowType(Qt.ArrowType.NoArrow)
-            btn.setIcon(fluent_icon.qicon())
-            btn.setIconSize(QSize(w, h))
-
-
-def _create_standard_fluent_date_edit(parent: QWidget | None, default_date: QDate) -> DateEdit:
-    """Стандартный qfluentwidgets DateEdit: поле даты + всплывающий календарь (без стрелок ± по полям)."""
-    w = DateEdit(parent)
-    w.setCalendarPopup(True)
-    w.setDisplayFormat("dd.MM.yyyy")
+def _create_journal_calendar_picker(parent: QWidget | None, default_date: QDate) -> FastCalendarPicker:
+    """Кнопка с датой и всплывающим Fluent-календарём (FastCalendarPicker / CalendarView)."""
+    w = FastCalendarPicker(parent)
+    w.setDateFormat("dd.MM.yyyy")
     w.setDate(default_date)
-    w.setSymbolVisible(False)
-    w.setFixedWidth(152)
-    if w.calendarWidget() is None:
-        w.setCalendarWidget(QCalendarWidget(w))
-    _patch_calendar_arrows(w)
+    w.setMinimumWidth(152)
     return w
 
 
@@ -336,6 +315,11 @@ def _journal_operation_total_units(rows: list) -> int:
             except (TypeError, ValueError):
                 pass
     return total
+
+
+def _split_serial_numbers_from_input(text: str) -> list[str]:
+    """Список S/N из строки ввода при приходе: через запятую, пустые части отбрасываются."""
+    return [p.strip() for p in text.split(",") if p.strip()]
 
 
 def _safe_sort_table_widget(table: QTableWidget, column: int, order: Qt.SortOrder) -> None:
@@ -1117,10 +1101,10 @@ class JournalTab(QWidget):
         filter_layout.setSpacing(12)
         filter_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.date_from_edit = _create_standard_fluent_date_edit(
+        self.date_from_edit = _create_journal_calendar_picker(
             self, QDate.currentDate().addMonths(-1)
         )
-        self.date_to_edit = _create_standard_fluent_date_edit(self, QDate.currentDate())
+        self.date_to_edit = _create_journal_calendar_picker(self, QDate.currentDate())
         self.filter_unit_combo = ComboBox()
         self.filter_unit_combo.setMinimumWidth(160)
 
@@ -1231,8 +1215,8 @@ class JournalTab(QWidget):
                 self._on_data_changed()
 
     def load_journal(self):
-        date_from = self.date_from_edit.date().toString("yyyy-MM-dd")
-        date_to   = self.date_to_edit.date().toString("yyyy-MM-dd")
+        date_from = self.date_from_edit.getDate().toString("yyyy-MM-dd")
+        date_to   = self.date_to_edit.getDate().toString("yyyy-MM-dd")
         unit_id   = self.filter_unit_combo.currentData()
         rows = self.db.get_journal_view(date_from=date_from, date_to=date_to, unit_id=unit_id)
 
@@ -1355,8 +1339,8 @@ class JournalTab(QWidget):
             return
         if not path.endswith(".xlsx"):
             path += ".xlsx"
-        date_from = self.date_from_edit.date().toString("yyyy-MM-dd")
-        date_to = self.date_to_edit.date().toString("yyyy-MM-dd")
+        date_from = self.date_from_edit.getDate().toString("yyyy-MM-dd")
+        date_to = self.date_to_edit.getDate().toString("yyyy-MM-dd")
         unit_id = self.filter_unit_combo.currentData()
         if not self._confirm_journal_export_if_within_limit(date_from, date_to, unit_id):
             return
@@ -1371,8 +1355,8 @@ class JournalTab(QWidget):
             return
         if not path.endswith(".pdf"):
             path += ".pdf"
-        date_from = self.date_from_edit.date().toString("yyyy-MM-dd")
-        date_to = self.date_to_edit.date().toString("yyyy-MM-dd")
+        date_from = self.date_from_edit.getDate().toString("yyyy-MM-dd")
+        date_to = self.date_to_edit.getDate().toString("yyyy-MM-dd")
         unit_id = self.filter_unit_combo.currentData()
         if not self._confirm_journal_export_if_within_limit(date_from, date_to, unit_id):
             return
@@ -1779,7 +1763,7 @@ class OperationsTab(QWidget):
         qty_pair_layout.addWidget(self.qty_spin)
 
         self.sn_edit = LineEdit()
-        self.sn_edit.setPlaceholderText("Заводской номер")
+        self.sn_edit.setPlaceholderText("S/N или несколько через запятую")
         self.sn_label = _fluent_caption_label("S/N:", self.sn_edit)
         self._sn_available = []
         self._sn_selected = []
@@ -1988,6 +1972,8 @@ class OperationsTab(QWidget):
         self.sn_label.setEnabled(is_sn)
         self.sn_edit.setVisible(is_sn and not use_combo)
         self.sn_edit.setEnabled(is_sn and not use_combo)
+        if is_sn and not use_combo:
+            self.sn_edit.setPlaceholderText("S/N или несколько через запятую")
         self.sn_dropdown_btn.setVisible(use_combo)
         self.sn_dropdown_btn.setEnabled(use_combo)
 
@@ -2318,22 +2304,43 @@ class OperationsTab(QWidget):
                 self._sn_selected = []
                 self._update_sn_dropdown_text()
             else:
-                sn = self.sn_edit.text().strip()
-                if not sn:
-                    QMessageBox.warning(self, "Ошибка", "Введите заводской номер (S/N).")
+                sns = _split_serial_numbers_from_input(self.sn_edit.text())
+                if not sns:
+                    QMessageBox.warning(
+                        self,
+                        "Ошибка",
+                        "Введите заводской номер (S/N) или несколько номеров через запятую.",
+                    )
                     return
-                if any(p["sn"] == sn for p in self._basket):
-                    QMessageBox.warning(self, "Ошибка", f"S/N «{sn}» уже добавлен в эту операцию.")
-                    return
-                self._basket.append({
-                    "variant_id": vrow["variant_id"],
-                    "item_name":  vrow["item_name"],
-                    "full_code":  vrow["full_code"],
-                    "size_name":  vrow["size_name"],
-                    "item_type":  "serial",
-                    "qty":        1,
-                    "sn":         sn,
-                })
+                seen_in_line: set[str] = set()
+                for sn in sns:
+                    if sn in seen_in_line:
+                        QMessageBox.warning(
+                            self,
+                            "Ошибка",
+                            f"S/N «{sn}» указан в строке несколько раз.",
+                        )
+                        return
+                    seen_in_line.add(sn)
+                basket_sns = {p["sn"] for p in self._basket if p.get("sn")}
+                for sn in sns:
+                    if sn in basket_sns:
+                        QMessageBox.warning(
+                            self,
+                            "Ошибка",
+                            f"S/N «{sn}» уже добавлен в эту операцию.",
+                        )
+                        return
+                for sn in sns:
+                    self._basket.append({
+                        "variant_id": vrow["variant_id"],
+                        "item_name":  vrow["item_name"],
+                        "full_code":  vrow["full_code"],
+                        "size_name":  vrow["size_name"],
+                        "item_type":  "serial",
+                        "qty":        1,
+                        "sn":         sn,
+                    })
                 self.sn_edit.clear()
 
         self._update_basket_btn()
@@ -3151,12 +3158,16 @@ class MainWindow(FluentWindow):
         global _current_theme
         _current_theme = self._theme
         setTheme(Theme.DARK if self._theme == "dark" else Theme.LIGHT)
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
         self.setWindowTitle("ЛТО — Складской учёт")
-        self.setWindowIcon(FluentIcon.APPLICATION.qicon())
+        _icon_path = os.path.join(_script_dir, "icon.ico")
+        if os.path.isfile(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
+        else:
+            self.setWindowIcon(FluentIcon.APPLICATION.qicon())
         self.resize(1200, 720)
         self.setMinimumSize(900, 580)
 
-        _script_dir = os.path.dirname(os.path.abspath(__file__))
         db_path = os.path.join(_script_dir, DB_NAME)
         logger.info("Using database: %s (exists: %s)", db_path, os.path.exists(db_path))
         self.db = DatabaseManager(db_path)
