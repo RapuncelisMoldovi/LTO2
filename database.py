@@ -114,7 +114,8 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS stock_serial (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 variant_id INTEGER NOT NULL REFERENCES variants(id) ON DELETE CASCADE,
-                factory_sn TEXT NOT NULL UNIQUE
+                factory_sn TEXT NOT NULL UNIQUE,
+                manufacture_year INTEGER
             )
             """
         )
@@ -129,6 +130,7 @@ class DatabaseManager:
                 variant_id INTEGER NOT NULL REFERENCES variants(id),
                 quantity INTEGER,
                 factory_sn TEXT,
+                manufacture_year INTEGER,
                 unit_id INTEGER REFERENCES units(id),
                 doc_name TEXT
             )
@@ -205,6 +207,14 @@ class DatabaseManager:
             cur.execute("ALTER TABLE journal ADD COLUMN doc_name TEXT")
         if "work_order_id" not in cols:
             cur.execute("ALTER TABLE journal ADD COLUMN work_order_id INTEGER REFERENCES work_orders(id)")
+        if "manufacture_year" not in cols:
+            cur.execute("ALTER TABLE journal ADD COLUMN manufacture_year INTEGER")
+        self.conn.commit()
+
+        cur.execute("PRAGMA table_info(stock_serial)")
+        ss_cols = [r[1] for r in cur.fetchall()]
+        if "manufacture_year" not in ss_cols:
+            cur.execute("ALTER TABLE stock_serial ADD COLUMN manufacture_year INTEGER")
         self.conn.commit()
 
         # Категория номенклатуры (лётное / парашютно-десантное и др.)
@@ -1082,11 +1092,21 @@ class DatabaseManager:
         )
         return cur.fetchone() is not None
 
-    def add_serial(self, variant_id: int, factory_sn: str, *, commit: bool = True):
+    def add_serial(
+        self,
+        variant_id: int,
+        factory_sn: str,
+        manufacture_year: int | None = None,
+        *,
+        commit: bool = True,
+    ):
         cur = self.conn.cursor()
         cur.execute(
-            "INSERT INTO stock_serial(variant_id, factory_sn) VALUES (?, ?)",
-            (variant_id, factory_sn.strip()),
+            """
+            INSERT INTO stock_serial(variant_id, factory_sn, manufacture_year)
+            VALUES (?, ?, ?)
+            """,
+            (variant_id, factory_sn.strip(), manufacture_year),
         )
         if commit:
             self.conn.commit()
@@ -1101,6 +1121,43 @@ class DatabaseManager:
         if commit:
             self.conn.commit()
         return deleted
+
+    def get_serial_manufacture_year(self, variant_id: int, factory_sn: str) -> int | None:
+        """Год выпуска на складе для S/N (до списания при выдаче)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT manufacture_year FROM stock_serial
+            WHERE variant_id = ? AND factory_sn = ?
+            """,
+            (variant_id, factory_sn.strip()),
+        )
+        row = cur.fetchone()
+        if not row or row["manufacture_year"] is None:
+            return None
+        return int(row["manufacture_year"])
+
+    def update_serial_manufacture_year(
+        self,
+        variant_id: int,
+        factory_sn: str,
+        manufacture_year: int | None,
+        *,
+        commit: bool = True,
+    ) -> bool:
+        """Обновить год выпуска у единицы на складе. None — сбросить год."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            UPDATE stock_serial SET manufacture_year = ?
+            WHERE variant_id = ? AND factory_sn = ?
+            """,
+            (manufacture_year, variant_id, factory_sn.strip()),
+        )
+        updated = cur.rowcount > 0
+        if commit:
+            self.conn.commit()
+        return updated
 
     # --- Journal ---
 
@@ -1130,13 +1187,17 @@ class DatabaseManager:
         doc_name: str,
         *,
         work_order_id: int | None = None,
+        manufacture_year: int | None = None,
         commit: bool = True,
     ):
         cur = self.conn.cursor()
         cur.execute(
             """
-            INSERT INTO journal(date, op_type, variant_id, quantity, factory_sn, unit_id, doc_name, work_order_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO journal(
+                date, op_type, variant_id, quantity, factory_sn, manufacture_year,
+                unit_id, doc_name, work_order_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1144,6 +1205,7 @@ class DatabaseManager:
                 variant_id,
                 quantity,
                 factory_sn.strip() if factory_sn else None,
+                manufacture_year,
                 unit_id,
                 doc_name.strip(),
                 work_order_id,
@@ -1169,11 +1231,21 @@ class DatabaseManager:
                 else:
                     sn = pos["sn"]
                     if op_type == "IN":
-                        self.add_serial(vid, sn, commit=False)
+                        my = pos.get("manufacture_year")
+                        if my is not None:
+                            my = int(my)
+                        self.add_serial(vid, sn, manufacture_year=my, commit=False)
+                        self.add_journal_record(
+                            op_type, vid, 1, sn, unit_id, doc_name,
+                            work_order_id=work_order_id, manufacture_year=my, commit=False,
+                        )
                     else:
+                        my = self.get_serial_manufacture_year(vid, sn)
                         self.remove_serial(vid, sn, commit=False)
-                    self.add_journal_record(op_type, vid, 1, sn, unit_id, doc_name,
-                                            work_order_id=work_order_id, commit=False)
+                        self.add_journal_record(
+                            op_type, vid, 1, sn, unit_id, doc_name,
+                            work_order_id=work_order_id, manufacture_year=my, commit=False,
+                        )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -1217,7 +1289,9 @@ class DatabaseManager:
                     else:
                         if self.serial_exists_for_variant(vid, sn):
                             raise ValueError(f"S/N «{sn}» уже на складе — возможно, операция уже была отменена")
-                        self.add_serial(vid, sn, commit=False)
+                        my_rev = r["manufacture_year"]
+                        my_i = int(my_rev) if my_rev is not None else None
+                        self.add_serial(vid, sn, manufacture_year=my_i, commit=False)
 
                 self.conn.execute("DELETE FROM journal WHERE id = ?", (jid,))
                 self._audit("JOURNAL_REVERSE", "journal", jid,
@@ -1319,6 +1393,7 @@ class DatabaseManager:
                 i.type AS item_type,
                 j.quantity AS quantity,
                 j.factory_sn AS factory_sn,
+                j.manufacture_year AS manufacture_year,
                 u.name AS unit_name
             FROM journal j
             JOIN variants v ON j.variant_id = v.id
@@ -1347,7 +1422,8 @@ class DatabaseManager:
         cur = self.conn.cursor()
         cur.execute(
             """
-            SELECT ss.factory_sn, v.id AS variant_id, v.size_name, v.full_code
+            SELECT ss.factory_sn, ss.manufacture_year AS manufacture_year,
+                   v.id AS variant_id, v.size_name, v.full_code
             FROM stock_serial ss
             JOIN variants v ON v.id = ss.variant_id
             WHERE v.item_id = ?
@@ -1417,6 +1493,7 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
             "Название",
             "Размер",
             "Кол-во",
+            "Год выпуска",
             "Подразделение",
         ]
         for c, h in enumerate(headers, 1):
@@ -1425,6 +1502,8 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
         for r, row in enumerate(rows, 2):
             op_text = "Приход" if row["op_type"] == "IN" else "Выдача"
             qty = row["quantity"] if row["quantity"] is not None else (1 if row["factory_sn"] else 0)
+            my = row["manufacture_year"]
+            my_cell = int(my) if my is not None else ""
             ws.cell(r, 1, row["date"])
             ws.cell(r, 2, op_text)
             ws.cell(r, 3, row["doc_name"] or "")
@@ -1432,7 +1511,8 @@ def _export_journal_excel(db: DatabaseManager, path: str, date_from: str, date_t
             ws.cell(r, 5, row["item_name"])
             ws.cell(r, 6, row["size_name"])
             ws.cell(r, 7, qty)
-            ws.cell(r, 8, row["unit_name"] or "")
+            ws.cell(r, 8, my_cell)
+            ws.cell(r, 9, row["unit_name"] or "")
         wb.save(path)
         logger.info("Exported journal to Excel: %s", path)
         return True
@@ -1509,12 +1589,15 @@ def _export_journal_pdf(db: DatabaseManager, path: str, date_from: str, date_to:
             "Название",
             "Размер",
             "Кол-во",
+            "Год вып.",
             "Подразделение",
         ]
         data = [col_headers]
         for row in rows:
             op_text = "Приход" if row["op_type"] == "IN" else "Выдача"
             qty = row["quantity"] if row["quantity"] is not None else (1 if row["factory_sn"] else 0)
+            my = row["manufacture_year"]
+            my_txt = str(int(my)) if my is not None else ""
             data.append([
                 row["date"],
                 op_text,
@@ -1523,10 +1606,11 @@ def _export_journal_pdf(db: DatabaseManager, path: str, date_from: str, date_to:
                 row["item_name"],
                 row["size_name"],
                 str(qty),
+                my_txt,
                 row["unit_name"] or "",
             ])
 
-        col_widths = [32*mm, 20*mm, 30*mm, 26*mm, 62*mm, 20*mm, 16*mm, 36*mm]
+        col_widths = [30*mm, 18*mm, 28*mm, 24*mm, 56*mm, 18*mm, 14*mm, 14*mm, 32*mm]
         t = Table(data, colWidths=col_widths, repeatRows=1)
         t.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), font),

@@ -42,6 +42,13 @@ QListWidget::item:hover:!selected {
     background-color: #F3F2F1;
 }
 
+/* Как у Fluent TableWidget/TreeWidget (main.py: rgba-бордер поверх qfluentwidgets QSS) */
+QFrame#UnitsListFrame {
+    border: 1px solid rgba(0, 0, 0, 11);
+    border-radius: 8px;
+    background: transparent;
+}
+
 /* Таблицы, деревья — чёткая рамка и отступ от фона страницы */
 QTableWidget {
     background-color: #FFFFFF;
@@ -375,6 +382,12 @@ QListWidget::item:selected {
 }
 QListWidget::item:hover:!selected {
     background-color: #3D3D3D;
+}
+
+QFrame#UnitsListFrame {
+    border: 1px solid rgba(255, 255, 255, 26);
+    border-radius: 8px;
+    background: transparent;
 }
 
 QTableWidget {

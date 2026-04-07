@@ -18,8 +18,16 @@ from database import (
     _export_stock_pdf,
 )
 
-from PyQt6.QtCore import Qt, QRectF, QSize, QDate, QTimer, QSettings
-from PyQt6.QtGui import QCloseEvent, QIcon, QFontDatabase, QFont, QColor, QPainter
+from PyQt6.QtCore import Qt, QRectF, QSize, QDate, QTimer, QSettings, QRegularExpression
+from PyQt6.QtGui import (
+    QCloseEvent,
+    QIcon,
+    QFontDatabase,
+    QFont,
+    QColor,
+    QPainter,
+    QRegularExpressionValidator,
+)
 from qfluentwidgets import (
     ComboBox,
     FastCalendarPicker,
@@ -320,6 +328,34 @@ def _journal_operation_total_units(rows: list) -> int:
 def _split_serial_numbers_from_input(text: str) -> list[str]:
     """Список S/N из строки ввода при приходе: через запятую, пустые части отбрасываются."""
     return [p.strip() for p in text.split(",") if p.strip()]
+
+
+def _optional_manufacture_year_from_line_edit(edit: LineEdit) -> tuple[int | None, str | None]:
+    """Год из поля до 4 цифр: пусто → (None, None); иначе ровно 4 цифры и диапазон 1900–2100."""
+    s = edit.text().strip()
+    if not s:
+        return None, None
+    if len(s) != 4:
+        return (
+            None,
+            "Год выпуска: введите 4 цифры (например, 2024) или оставьте поле пустым.",
+        )
+    y = int(s)
+    if not (1900 <= y <= 2100):
+        return None, "Год выпуска: допустимы значения от 1900 до 2100."
+    return y, None
+
+
+def _configure_manufacture_year_line_edit(edit: LineEdit) -> None:
+    """Поле года: только цифры, не более 4 символов."""
+    edit.setMaxLength(4)
+    edit.setPlaceholderText("ГГГГ")
+    edit.setValidator(
+        QRegularExpressionValidator(QRegularExpression(r"^\d*$"))
+    )
+
+
+_STOCK_SERIAL_TREE_ROLE_KIND = "stock_serial"
 
 
 def _safe_sort_table_widget(table: QTableWidget, column: int, order: Qt.SortOrder) -> None:
@@ -990,13 +1026,16 @@ class OperationDetailDialog(QDialog):
         pos_label.setObjectName("OpDetailPosLabel")
         layout.addWidget(pos_label)
 
-        table = _create_fluent_table(self, 4)
-        table.setHorizontalHeaderLabels(["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N"])
+        table = _create_fluent_table(self, 5)
+        table.setHorizontalHeaderLabels(
+            ["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N", "Год выпуска"]
+        )
         hh = table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         table.setColumnWidth(1, 120)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
@@ -1004,10 +1043,13 @@ class OperationDetailDialog(QDialog):
             row_idx = table.rowCount()
             table.insertRow(row_idx)
             qty_sn = r["factory_sn"] if r["factory_sn"] else str(r["quantity"] or "")
+            my = r["manufacture_year"]
+            my_txt = str(int(my)) if my is not None else "—"
             table.setItem(row_idx, 0, QTableWidgetItem(r["item_name"]))
             table.setItem(row_idx, 1, QTableWidgetItem(_size_display(r["size_name"])))
             table.setItem(row_idx, 2, QTableWidgetItem(r["full_code"] or ""))
             table.setItem(row_idx, 3, QTableWidgetItem(qty_sn))
+            table.setItem(row_idx, 4, QTableWidgetItem(my_txt if r["factory_sn"] else "—"))
 
         layout.addWidget(table, 1)
 
@@ -1307,12 +1349,20 @@ class JournalTab(QWidget):
             if text.isdigit():
                 q = int(text)
                 num_ok = q == n_units or q == n_pos
+            def _row_matches_journal_search(row) -> bool:
+                if text in (row["item_name"] or "").lower():
+                    return True
+                my = row["manufacture_year"]
+                if my is not None and text == str(int(my)):
+                    return True
+                return False
+
             match = (
                 text in (op["doc_name"] or "").lower()
                 or text in wo_low
                 or text in op["date"].lower()
                 or num_ok
-                or any(text in (row["item_name"] or "").lower() for row in op["rows"])
+                or any(_row_matches_journal_search(row) for row in op["rows"])
             )
             table.setRowHidden(r, not match)
 
@@ -1487,16 +1537,20 @@ class BasketDialog(QDialog):
         content_layout.addWidget(form_frame)
 
         # Таблица
-        self.table = _create_fluent_table(self, 5, default_row_height=40)
-        self.table.setHorizontalHeaderLabels(["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N", ""])
+        self.table = _create_fluent_table(self, 6, default_row_height=40)
+        self.table.setHorizontalHeaderLabels(
+            ["Название", "Размер", "Н/Н (полный)", "Кол-во / S/N", "Год вып.", ""]
+        )
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(4, 44)
+        self.table.setColumnWidth(4, 72)
+        self.table.setColumnWidth(5, 44)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         content_layout.addWidget(self.table, 1)
 
@@ -1566,6 +1620,14 @@ class BasketDialog(QDialog):
             qty_item = QTableWidgetItem(val)
             qty_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(i, 3, qty_item)
+            if pos["item_type"] == "serial":
+                my = pos.get("manufacture_year")
+                yr_txt = str(int(my)) if my is not None else "—"
+            else:
+                yr_txt = "—"
+            yr_it = QTableWidgetItem(yr_txt)
+            yr_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(i, 4, yr_it)
             del_btn = PushButton("✕")
             del_btn.setObjectName("DelItemBtn")
             del_btn.setFixedSize(24, 24)
@@ -1575,7 +1637,7 @@ class BasketDialog(QDialog):
             c_layout.setContentsMargins(0, 0, 0, 0)
             c_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             c_layout.addWidget(del_btn)
-            self.table.setCellWidget(i, 4, container)
+            self.table.setCellWidget(i, 5, container)
 
     def _remove_item(self, idx: int):
         if 0 <= idx < len(self._basket):
@@ -1765,6 +1827,13 @@ class OperationsTab(QWidget):
         self.sn_edit = LineEdit()
         self.sn_edit.setPlaceholderText("S/N или несколько через запятую")
         self.sn_label = _fluent_caption_label("S/N:", self.sn_edit)
+        self.year_edit = LineEdit()
+        _configure_manufacture_year_line_edit(self.year_edit)
+        self.year_edit.setFixedWidth(64)
+        self.year_edit.setToolTip(
+            "Необязательно. До 4 цифр. Один год для всех S/N в этой партии (через запятую)."
+        )
+        self.year_label = _fluent_caption_label("Год выпуска:", self.year_edit)
         self._sn_available = []
         self._sn_selected = []
         self.sn_dropdown_btn = PushButton("Выбрать заводские номера")
@@ -1780,6 +1849,8 @@ class OperationsTab(QWidget):
         qty_sn_row.addSpacing(4)
         qty_sn_row.addWidget(self.sn_label)
         qty_sn_row.addWidget(self.sn_edit, 1)
+        qty_sn_row.addWidget(self.year_label)
+        qty_sn_row.addWidget(self.year_edit)
         qty_sn_row.addWidget(self.sn_dropdown_btn, 1)
         qty_sn_row.addSpacing(8)
         qty_sn_row.addWidget(self.add_btn)
@@ -1796,6 +1867,7 @@ class OperationsTab(QWidget):
         if _qty_le is not None:
             _qty_le.returnPressed.connect(self.on_add_to_basket)
         self.sn_edit.returnPressed.connect(self.on_add_to_basket)
+        self.year_edit.returnPressed.connect(self.on_add_to_basket)
         self.basket_btn.clicked.connect(self._open_basket)
         self.op_segment.currentItemChanged.connect(lambda _k: self._on_op_type_changed())
         self.wo_load_btn.clicked.connect(self._on_load_from_work_order)
@@ -1977,6 +2049,12 @@ class OperationsTab(QWidget):
         self.sn_dropdown_btn.setVisible(use_combo)
         self.sn_dropdown_btn.setEnabled(use_combo)
 
+        show_year = is_sn and not is_out
+        self.year_label.setVisible(show_year or item_type is None)
+        self.year_edit.setVisible(show_year or item_type is None)
+        self.year_label.setEnabled(show_year)
+        self.year_edit.setEnabled(show_year)
+
         self.add_btn.setEnabled(item_type is not None)
 
     def _update_qty_spin_max(self):
@@ -2041,6 +2119,7 @@ class OperationsTab(QWidget):
             self.selected_label.setText("Выберите товар из результатов поиска")
             self._set_input_mode(None)
             self.sn_edit.clear()
+            self.year_edit.clear()
             self._sn_available = []
             self._sn_selected = []
             self._update_sn_dropdown_text()
@@ -2292,6 +2371,7 @@ class OperationsTab(QWidget):
                         QMessageBox.warning(self, "Ошибка", f"S/N «{sn}» уже в корзине.")
                         return
                 for rec in self._sn_selected:
+                    my_o = rec["manufacture_year"]
                     self._basket.append({
                         "variant_id": rec["variant_id"],
                         "item_name":  vrow["item_name"],
@@ -2300,6 +2380,7 @@ class OperationsTab(QWidget):
                         "item_type":  "serial",
                         "qty":        1,
                         "sn":         rec["factory_sn"],
+                        "manufacture_year": int(my_o) if my_o is not None else None,
                     })
                 self._sn_selected = []
                 self._update_sn_dropdown_text()
@@ -2331,6 +2412,10 @@ class OperationsTab(QWidget):
                             f"S/N «{sn}» уже добавлен в эту операцию.",
                         )
                         return
+                yr, yr_err = _optional_manufacture_year_from_line_edit(self.year_edit)
+                if yr_err:
+                    QMessageBox.warning(self, "Ошибка", yr_err)
+                    return
                 for sn in sns:
                     self._basket.append({
                         "variant_id": vrow["variant_id"],
@@ -2340,8 +2425,10 @@ class OperationsTab(QWidget):
                         "item_type":  "serial",
                         "qty":        1,
                         "sn":         sn,
+                        "manufacture_year": yr,
                     })
                 self.sn_edit.clear()
+                self.year_edit.clear()
 
         self._update_basket_btn()
         self._refresh_results_table()
@@ -2887,6 +2974,8 @@ class StockTab(QWidget):
         self.tree.setExpandsOnDoubleClick(True)
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.itemClicked.connect(self.on_item_clicked)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_stock_tree_context_menu)
 
         self.tree.setSortingEnabled(True)
         self._stock_sort_column = 0
@@ -2963,7 +3052,11 @@ class StockTab(QWidget):
             for sn_row in serials:
                 sn_node = QTreeWidgetItem(top)
                 sn_node.setText(0, sn_row["full_code"])
-                sn_node.setText(1, f"S/N: {sn_row['factory_sn']}")
+                sn_disp = sn_row["factory_sn"]
+                my_s = sn_row["manufacture_year"]
+                if my_s is not None:
+                    sn_disp = f"{sn_disp} · {int(my_s)} г."
+                sn_node.setText(1, f"S/N: {sn_disp}")
                 size = sn_row["size_name"]
                 sn_node.setText(2, _size_display(size))
                 sn_node.setText(3, "1")
@@ -2974,6 +3067,15 @@ class StockTab(QWidget):
                 )
                 for col in range(5):
                     sn_node.setForeground(col, _theme_color("muted_child"))
+                sn_node.setData(
+                    0,
+                    Qt.ItemDataRole.UserRole,
+                    {
+                        "kind": _STOCK_SERIAL_TREE_ROLE_KIND,
+                        "variant_id": int(sn_row["variant_id"]),
+                        "factory_sn": str(sn_row["factory_sn"]),
+                    },
+                )
             if top.childCount() == 0:
                 top.setChildIndicatorPolicy(
                     QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
@@ -3042,6 +3144,90 @@ class StockTab(QWidget):
         if item.childCount() > 0:
             item.setExpanded(not item.isExpanded())
 
+    def _stock_serial_payload_from_item(self, item: QTreeWidgetItem | None) -> dict | None:
+        """Данные строки S/N на складе или None."""
+        if item is None:
+            return None
+        raw = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(raw, dict) or raw.get("kind") != _STOCK_SERIAL_TREE_ROLE_KIND:
+            return None
+        return raw
+
+    def _on_stock_tree_context_menu(self, pos) -> None:
+        item = self.tree.itemAt(pos)
+        payload = self._stock_serial_payload_from_item(item)
+        if payload is None:
+            return
+        menu = QMenu(self)
+        act = menu.addAction("Год выпуска…")
+        chosen = menu.exec(self.tree.mapToGlobal(pos))
+        if chosen != act:
+            return
+        self.tree.setCurrentItem(item)
+        self._open_stock_serial_year_dialog(
+            payload["variant_id"], payload["factory_sn"], item
+        )
+
+    def _refresh_sn_node_year_label(
+        self, tree_item: QTreeWidgetItem, factory_sn: str, year: int | None
+    ) -> None:
+        sn_disp = factory_sn
+        if year is not None:
+            sn_disp = f"{factory_sn} · {int(year)} г."
+        tree_item.setText(1, f"S/N: {sn_disp}")
+
+    def _open_stock_serial_year_dialog(
+        self, variant_id: int, factory_sn: str, tree_item: QTreeWidgetItem
+    ) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Год выпуска")
+        dlg.setMinimumWidth(420)
+        root = QVBoxLayout(dlg)
+        root.setSpacing(12)
+        root.addWidget(QLabel(f"S/N: {factory_sn}"))
+        hint = QLabel(
+            "Введите четыре цифры года (например, 2024). Пустое поле — сбросить год выпуска."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("JournalHint")
+        root.addWidget(hint)
+        edit = LineEdit()
+        _configure_manufacture_year_line_edit(edit)
+        edit.setFixedWidth(88)
+        cur = self.db.get_serial_manufacture_year(variant_id, factory_sn)
+        if cur is not None:
+            edit.setText(str(cur))
+        root.addWidget(edit)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = PushButton("Отмена")
+        save_btn = PrimaryPushButton("Сохранить")
+        save_btn.setDefault(True)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        root.addLayout(btn_row)
+
+        def on_save() -> None:
+            yr, err = _optional_manufacture_year_from_line_edit(edit)
+            if err:
+                QMessageBox.warning(dlg, "Ошибка", err)
+                return
+            if not self.db.update_serial_manufacture_year(variant_id, factory_sn, yr):
+                QMessageBox.warning(
+                    dlg,
+                    "Ошибка",
+                    "Не удалось обновить запись (возможно, S/N уже не на складе).",
+                )
+                return
+            self._refresh_sn_node_year_label(tree_item, factory_sn, yr)
+            dlg.accept()
+
+        save_btn.clicked.connect(on_save)
+        edit.returnPressed.connect(on_save)
+        dlg.exec()
+
 
 class UnitsTab(QWidget):
     def __init__(self, db: DatabaseManager, units_changed_callback=None, parent=None):
@@ -3057,9 +3243,15 @@ class UnitsTab(QWidget):
         layout.setSpacing(12)
 
         self.list_widget = ListWidget()
-        _style_fluent_list_frame(self.list_widget)
+        self._units_list_frame = QFrame()
+        self._units_list_frame.setObjectName("UnitsListFrame")
+        self._units_list_frame.setFrameShape(QFrame.Shape.NoFrame)
+        _uf = QVBoxLayout(self._units_list_frame)
+        _uf.setContentsMargins(0, 0, 0, 0)
+        _uf.setSpacing(0)
+        _uf.addWidget(self.list_widget)
         layout.addWidget(_fluent_caption_label("Подразделения:", self.list_widget))
-        layout.addWidget(self.list_widget, 1)
+        layout.addWidget(self._units_list_frame, 1)
 
         btn_layout = QHBoxLayout()
         self.add_btn = PushButton("Добавить подразделение")
