@@ -1691,8 +1691,10 @@ class BasketDialog(QDialog):
             else:
                 sn = pos["sn"]
                 if self._op_type == "IN":
-                    if self.db.serial_exists(sn):
-                        errors.append(f"S/N «{sn}» уже числится на складе")
+                    if self.db.serial_exists_for_variant(vid, sn):
+                        errors.append(
+                            f"S/N «{sn}» уже числится на складе по этой позиции (н/н)"
+                        )
                 else:
                     if not self.db.serial_exists_for_variant(vid, sn):
                         errors.append(f"S/N «{sn}» не найден на складе")

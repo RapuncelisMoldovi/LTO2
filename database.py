@@ -109,13 +109,15 @@ class DatabaseManager:
         )
 
         # Серийный учет (основные средства)
+        # Один и тот же заводской номер может быть у разных изделий (разный variant_id).
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS stock_serial (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 variant_id INTEGER NOT NULL REFERENCES variants(id) ON DELETE CASCADE,
-                factory_sn TEXT NOT NULL UNIQUE,
-                manufacture_year INTEGER
+                factory_sn TEXT NOT NULL,
+                manufacture_year INTEGER,
+                UNIQUE(variant_id, factory_sn)
             )
             """
         )
@@ -216,6 +218,36 @@ class DatabaseManager:
         if "manufacture_year" not in ss_cols:
             cur.execute("ALTER TABLE stock_serial ADD COLUMN manufacture_year INTEGER")
         self.conn.commit()
+
+        # Миграция: глобально уникальный factory_sn -> уникальность (variant_id, factory_sn)
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='stock_serial'")
+        ss_sql_row = cur.fetchone()
+        ss_sql = (ss_sql_row[0] if ss_sql_row else "") or ""
+        if ss_sql and "factory_sn TEXT NOT NULL UNIQUE" in ss_sql:
+            logger.info(
+                "Migrating stock_serial: UNIQUE(factory_sn) -> UNIQUE(variant_id, factory_sn)"
+            )
+            cur.execute(
+                """
+                CREATE TABLE stock_serial_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    variant_id INTEGER NOT NULL REFERENCES variants(id) ON DELETE CASCADE,
+                    factory_sn TEXT NOT NULL,
+                    manufacture_year INTEGER,
+                    UNIQUE(variant_id, factory_sn)
+                )
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO stock_serial_new (id, variant_id, factory_sn, manufacture_year)
+                SELECT id, variant_id, factory_sn, manufacture_year FROM stock_serial
+                """
+            )
+            cur.execute("DROP TABLE stock_serial")
+            cur.execute("ALTER TABLE stock_serial_new RENAME TO stock_serial")
+            self.conn.commit()
+            self._ensure_indices()
 
         # Категория номенклатуры (лётное / парашютно-десантное и др.)
         cur.execute("PRAGMA table_info(items)")
@@ -464,9 +496,14 @@ class DatabaseManager:
     ) -> tuple[int, int, list[str]]:
         """
         Импорт номенклатуры из Excel.
-        Колонки: A — наименование, B — размер/маркер, C — н/н, D — ед. изм., E — тип учёта.
-        E пусто — материальные средства (qty), без заводского номера при поступлении/выдаче.
-        E = «sn» — основные средства (serial), требуется заводской номер при поступлении и выдаче.
+
+        Лётное снаряжение: A — наименование, B — размер или маркер «н/н (базовый)» / «Без размера»,
+        C — н/н, D — ед. изм., E — тип учёта. Несколько строк с одним наименованием — размерный ряд.
+
+        Парашютно-десантное: A — наименование, B — н/н, C — ед. изм., D — тип учёта: «sn» (серийный)
+        или пусто / «без» (количественный). Каждая строка — одно изделие, один вариант «Без размера».
+
+        Для лётного: E пусто — qty; E = «sn» — серийный учёт (serial).
         """
         import_category = normalize_nomenclature_category(category)
         try:
@@ -500,8 +537,20 @@ class DatabaseManager:
                 return 0, 0, ["В книге нет активного листа"]
 
             rows: list[tuple[str, str, str, str, str]] = []
+            pdi_rows: list[tuple[str, str, str, str]] = []
             for row in ws.iter_rows(min_row=1, max_col=5, values_only=True):
-                if not row or row[0] is None:
+                if not row:
+                    continue
+                if import_category == NOMENCLATURE_CATEGORY_PARACHUTE:
+                    name = (row[0] or "").strip()
+                    if not name:
+                        continue
+                    code = str((row[1] if len(row) > 1 else None) or "").strip()
+                    uom = str((row[2] if len(row) > 2 else None) or "").strip() or "шт"
+                    col_d = str((row[3] if len(row) > 3 else None) or "").strip()
+                    pdi_rows.append((name, code, uom, col_d))
+                    continue
+                if row[0] is None:
                     continue
                 name = (row[0] or "").strip()
                 if not name:
@@ -516,15 +565,80 @@ class DatabaseManager:
                 rows.append((name, col_b, code, uom, str(col_e).strip()))
             wb.close()
 
-            if skip_header_row and rows:
+            if import_category == NOMENCLATURE_CATEGORY_PARACHUTE:
+                if skip_header_row and pdi_rows:
+                    first_cell = str(pdi_rows[0][0]).strip().lower()
+                    if first_cell in (
+                        "наименование",
+                        "название",
+                        "name",
+                        "номер",
+                        "n",
+                        "наименование изделия",
+                    ):
+                        pdi_rows = pdi_rows[1:]
+            elif skip_header_row and rows:
                 first_cell = str(rows[0][0]).strip().lower()
                 if first_cell in ("наименование", "название", "name", "номер", "n", "наименование изделия"):
                     rows = rows[1:]
         except Exception as e:
             return 0, 0, [f"Ошибка чтения файла: {e}"]
 
-        if not rows:
+        if import_category == NOMENCLATURE_CATEGORY_PARACHUTE:
+            if not pdi_rows:
+                return 0, 0, [
+                    "В файле нет данных (ПДИ: A — наименование, B — н/н, C — ед. изм., D — sn или без/пусто)."
+                ]
+        elif not rows:
             return 0, 0, ["В файле нет данных (ожидаются колонки: наименование, размер/маркер, н/н, ед. изм., тип [sn или пусто])."]
+
+        if import_category == NOMENCLATURE_CATEGORY_PARACHUTE:
+            cur_chk = self.conn.cursor()
+
+            def _pdi_col_d_to_item_type(col_d: str) -> str:
+                """D: «sn» → serial; пусто, «без» и любое другое (кроме sn) → qty."""
+                s = col_d.strip().lower()
+                if s == "sn":
+                    return "serial"
+                return "qty"
+
+            for name_s, code_s_raw, uom_raw, col_d in pdi_rows:
+                name_s = name_s.strip()
+                code_s = (code_s_raw or "").strip()
+                if not name_s:
+                    errors.append("Пустое наименование (колонка A) — строка пропущена")
+                    continue
+                if not code_s:
+                    errors.append(f"«{name_s}»: не указан номенклатурный номер (колонка B)")
+                    continue
+                cur_chk.execute(
+                    "SELECT 1 FROM variants WHERE full_code = ?",
+                    (code_s,),
+                )
+                if cur_chk.fetchone():
+                    errors.append(
+                        f"«{name_s}»: н/н «{code_s}» уже есть в номенклатуре — пропущено"
+                    )
+                    continue
+                uom_s = (uom_raw or "").strip() or "шт"
+                item_type = _pdi_col_d_to_item_type(col_d)
+                try:
+                    item_id = self.add_item(
+                        name_s, code_s, uom_s, item_type, category=import_category
+                    )
+                    items_added += 1
+                except sqlite3.IntegrityError as e:
+                    errors.append(f"«{name_s}» (н/н «{code_s}»): не удалось добавить изделие — {e}")
+                    continue
+                try:
+                    self.add_variant(item_id, "Без размера", code_s, item_type)
+                    variants_added += 1
+                except sqlite3.IntegrityError:
+                    errors.append(
+                        f"«{name_s}» (н/н «{code_s}»): дубликат н/н при добавлении варианта — пропущено"
+                    )
+                    self.delete_item(item_id)
+            return items_added, variants_added, errors
 
         def _name_key(r):
             return r[0]
@@ -675,6 +789,19 @@ class DatabaseManager:
         )
         return int(cur.fetchone()["cnt"] or 0)
 
+    def delete_all_items_in_category(self, category: str) -> int:
+        """
+        Удаляет все изделия указанной категории номенклатуры вместе с вариантами,
+        остатками, журналом и строками нарядов.
+        """
+        cat = normalize_nomenclature_category(category)
+        cur = self.conn.cursor()
+        cur.execute("SELECT id FROM items WHERE category = ?", (cat,))
+        item_ids = [int(r["id"]) for r in cur.fetchall()]
+        for iid in item_ids:
+            self.delete_item(iid)
+        return len(item_ids)
+
     def delete_item(self, item_id: int):
         """Удаляет изделие и все связанные варианты, остатки и записи журнала."""
         try:
@@ -684,6 +811,10 @@ class DatabaseManager:
             variant_ids = [r["id"] for r in cur.fetchall()]
             if variant_ids:
                 placeholders = ",".join("?" * len(variant_ids))
+                cur.execute(
+                    f"DELETE FROM work_order_items WHERE variant_id IN ({placeholders})",
+                    variant_ids,
+                )
                 cur.execute(f"DELETE FROM journal WHERE variant_id IN ({placeholders})", variant_ids)
                 cur.execute(f"DELETE FROM stock_qty WHERE variant_id IN ({placeholders})", variant_ids)
                 cur.execute(f"DELETE FROM stock_serial WHERE variant_id IN ({placeholders})", variant_ids)
@@ -1078,6 +1209,7 @@ class DatabaseManager:
             self.conn.commit()
 
     def serial_exists(self, factory_sn: str) -> bool:
+        """True, если S/N есть хотя бы у одного варианта на складе."""
         cur = self.conn.cursor()
         cur.execute(
             "SELECT id FROM stock_serial WHERE factory_sn = ?", (factory_sn.strip(),)
